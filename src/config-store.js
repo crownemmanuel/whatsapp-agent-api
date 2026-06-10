@@ -1,6 +1,8 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { randomUUID } from "node:crypto"
+import { defaultCodexAgentConfig, normalizeCodexAgentConfig } from "./codex-agent.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -10,20 +12,10 @@ const CONFIG_PATH = path.join(DATA_DIR, "config.json")
 
 export function defaultConfig() {
   return {
-    dashboardPort: 3399,
-    openDashboardOnStart: true,
-    showImages: true,
-    knownGroups: [],
-    watchedGroups: [],
-    keywordMode: "all",
-    keywords: [],
-    pulseEnabled: false,
-    pulseMode: "all",
-    pulseKeywords: [],
-    flashMode: "keywords",
-    groupKeywords: {},
-    groupPinHash: "",
-    messageFontSize: 42,
+    apiPort: 3399,
+    openDocsOnStart: true,
+    webhooks: [],
+    codexAgent: defaultCodexAgentConfig(),
   }
 }
 
@@ -61,82 +53,49 @@ export function getQrPath() {
   return path.join(ROOT, "wa-qr.png")
 }
 
+export function getCodexWorkspaceRoot() {
+  return path.join(DATA_DIR, "codex-workspaces")
+}
+
 export function normalizeConfig(input) {
   const defaults = defaultConfig()
   const safe = input && typeof input === "object" ? input : {}
 
-  const knownGroups = Array.isArray(safe.knownGroups)
-    ? safe.knownGroups
-        .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          id: String(item.id || "").trim(),
-          name: String(item.name || "").trim(),
-        }))
-        .filter((item) => item.id)
-    : []
+  return {
+    apiPort: toPositiveInt(safe.apiPort, defaults.apiPort),
+    openDocsOnStart: safe.openDocsOnStart !== false,
+    webhooks: normalizeWebhooks(safe.webhooks),
+    codexAgent: normalizeCodexAgentConfig(safe.codexAgent || defaults.codexAgent),
+  }
+}
 
-  const watchedGroups = Array.isArray(safe.watchedGroups)
-    ? safe.watchedGroups
-        .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          id: String(item.id || "").trim(),
-          name: String(item.name || "").trim(),
-        }))
-        .filter((item) => item.id)
-    : []
+export function normalizeWebhook(input) {
+  if (!input || typeof input !== "object") return null
+  const url = String(input.url || "").trim()
+  if (!/^https?:\/\//i.test(url)) return null
 
-  const keywords = Array.isArray(safe.keywords)
-    ? safe.keywords.map((item) => String(item || "").trim()).filter(Boolean)
-    : []
-  const pulseKeywords = Array.isArray(safe.pulseKeywords)
-    ? safe.pulseKeywords.map((item) => String(item || "").trim()).filter(Boolean)
-    : []
-
-  const groupKeywords = normalizeGroupKeywords(safe.groupKeywords)
-
-  const dashboardPort = toPositiveInt(safe.dashboardPort, defaults.dashboardPort)
-  const messageFontSize = toPositiveInt(safe.messageFontSize, defaults.messageFontSize)
-  const keywordMode = safe.keywordMode === "keywords" ? "keywords" : "all"
-  const pulseMode = typeof safe.pulseMode === "string"
-    ? (safe.pulseMode === "keywords" ? "keywords" : "all")
-    : (safe.flashMode === "keywords" ? "keywords" : "all")
-  const flashMode = safe.flashMode === "keywords" ? "keywords" : "all"
-  const groupPinHash = typeof safe.groupPinHash === "string" ? safe.groupPinHash.trim() : ""
+  const chatId = String(input.chatId || "").trim()
+  const eventsRaw = Array.isArray(input.events) ? input.events : []
+  const events = eventsRaw.map((e) => String(e || "").trim()).filter(Boolean)
 
   return {
-    dashboardPort,
-    openDashboardOnStart: safe.openDashboardOnStart !== false,
-    showImages: safe.showImages !== false,
-    knownGroups,
-    watchedGroups,
-    keywordMode,
-    keywords,
-    pulseEnabled: Boolean(safe.pulseEnabled),
-    pulseMode: pulseMode || flashMode || "all",
-    pulseKeywords,
-    flashMode,
-    groupKeywords,
-    groupPinHash,
-    messageFontSize: Math.max(16, Math.min(120, messageFontSize)),
+    id: String(input.id || "").trim() || randomUUID(),
+    url,
+    chatId: chatId || null,
+    events: events.length ? events : ["message"],
+    secret: typeof input.secret === "string" ? input.secret.trim() : "",
+    enabled: input.enabled !== false,
+    createdAt: input.createdAt || new Date().toISOString(),
   }
+}
+
+function normalizeWebhooks(input) {
+  if (!Array.isArray(input)) return []
+  return input.map(normalizeWebhook).filter(Boolean)
 }
 
 function toPositiveInt(value, fallback) {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return fallback
   return Math.trunc(n)
-}
-
-function normalizeGroupKeywords(input) {
-  if (!input || typeof input !== "object") return {}
-  const out = {}
-  for (const [groupId, words] of Object.entries(input)) {
-    const id = String(groupId || "").trim()
-    if (!id) continue
-    const normalized = Array.isArray(words)
-      ? words.map((word) => String(word || "").trim()).filter(Boolean)
-      : []
-    out[id] = normalized
-  }
-  return out
 }

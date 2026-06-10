@@ -1,28 +1,31 @@
 {
-  "name": "whatsapp-command-center",
-  "version": "0.1.1",
+  "name": "whatsapp-api-gateway",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Big-screen WhatsApp command center dashboard",
+  "description": "General-purpose WhatsApp API gateway for agents (Baileys + OpenAPI/Swagger)",
   "keywords": [
     "whatsapp",
-    "dashboard",
+    "api",
+    "gateway",
     "baileys",
-    "command-center",
-    "monitoring"
+    "openapi",
+    "swagger",
+    "agents",
+    "webhooks"
   ],
   "license": "MIT",
   "author": "",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/whatsapp-command-center.git"
+    "url": "git+https://github.com/your-username/whatsapp-api-gateway.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/whatsapp-command-center/issues"
+    "url": "https://github.com/your-username/whatsapp-api-gateway/issues"
   },
-  "homepage": "https://github.com/your-username/whatsapp-command-center#readme",
+  "homepage": "https://github.com/your-username/whatsapp-api-gateway#readme",
   "main": "src/index.js",
   "bin": {
-    "whatsappCC": "bin/whatsappCC.js"
+    "whatsappAPI": "bin/whatsappCC.js"
   },
   "files": [
     "bin",
@@ -31,17 +34,17 @@
   ],
   "scripts": {
     "start": "node src/index.js",
-    "check": "node --check src/*.js",
+    "test": "node --test",
+    "check": "node --check src/index.js && node --check src/api-server.js && node --check src/whatsapp.js && node --check src/openapi.js && node --check src/config-store.js && node --check src/codex-agent.js",
     "prepublishOnly": "npm run check"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@inquirer/prompts": "^7.8.6",
+    "@openai/codex-sdk": "^0.139.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.6",
     "pino": "^10.1.0",
-    "qrcode": "^1.5.4",
-    "ws": "^8.18.3"
+    "qrcode": "^1.5.4"
   }
 }
