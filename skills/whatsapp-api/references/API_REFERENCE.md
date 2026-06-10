@@ -440,6 +440,192 @@ Returns recent in-memory Codex run records for the current gateway process.
 
 ---
 
+## GET /api/cron/status
+
+Returns scheduler state, next-run summaries, recent runs, workspace root, and Codex readiness.
+
+```json
+{
+  "enabled": true,
+  "defaultTimezone": "America/New_York",
+  "jobCount": 1,
+  "runningJobIds": [],
+  "rootDir": "/path/to/data/cron-jobs",
+  "jobs": [{ "id": "daily-birthdays", "name": "Daily birthdays", "nextRunAt": "2026-06-11T10:00:00.000Z" }],
+  "recentRuns": [],
+  "codex": { "ready": true, "installCommand": "npm install @openai/codex-sdk" }
+}
+```
+
+---
+
+## GET /api/cron/config
+
+Returns the scheduler config stored in `data/config.json`.
+
+Important fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Enables scheduled execution while the gateway is running |
+| `defaultTimezone` | string | Timezone used when a job omits one |
+| `jobs` | CronJob[] | Step-based job definitions |
+
+---
+
+## PUT /api/cron/config
+
+Update scheduler settings. Partial objects are accepted.
+
+```json
+{
+  "enabled": true,
+  "defaultTimezone": "America/New_York"
+}
+```
+
+---
+
+## GET /api/cron/jobs
+
+List scheduled jobs.
+
+---
+
+## POST /api/cron/jobs
+
+Create a scheduled job.
+
+```json
+{
+  "id": "daily-birthdays",
+  "name": "Daily birthdays",
+  "enabled": true,
+  "schedule": { "expression": "0 6 * * *", "timezone": "America/New_York" },
+  "previewOnly": false,
+  "allowOverlap": false,
+  "env": { "API_KEY": "BIRTHDAY_API_KEY" },
+  "steps": [
+    {
+      "type": "http",
+      "id": "fetch",
+      "method": "GET",
+      "url": "https://example.com/birthdays",
+      "headers": { "authorization": "Bearer ${env:API_KEY}" },
+      "saveAs": "birthdays"
+    },
+    {
+      "type": "transform",
+      "id": "today",
+      "from": "birthdays.body.people",
+      "filter": { "path": "birthdayIsToday", "equals": true },
+      "saveAs": "people"
+    },
+    {
+      "type": "codex",
+      "id": "draft",
+      "prompt": "Use ${steps.people} and memory.md to draft copy and create artifacts/image.png.",
+      "sandbox": "workspace-write",
+      "saveAs": "draft"
+    },
+    {
+      "type": "whatsapp",
+      "id": "send",
+      "to": "120363204563219847@g.us",
+      "text": "${steps.draft.text}",
+      "mediaPath": "${steps.draft.imagePath}",
+      "mediaType": "image"
+    }
+  ]
+}
+```
+
+Supported step types:
+
+- `http`: `method`, `url`, `headers`, `body`
+- `transform`: `from`, optional `filter.path`/`filter.equals`, optional `pick`
+- `script`: `command`, `timeoutMs`
+- `codex`: `prompt`, optional `sandbox`, `model`, `outputSchema`
+- `whatsapp`: `to`, `text`, optional `mediaPath`, `mediaType`, `caption`
+
+Template tokens inside strings:
+
+- `${env:ALIAS}` — resolves from job `env` aliases to process env values
+- `${steps.stepId.path[0]}` — prior step output
+- `${workspace:artifacts/file.png}` — absolute path in the job workspace
+- `${job.id}` — job metadata
+
+Secrets stay in environment variables. The config stores env var names, not secret values. WhatsApp sends happen automatically unless `previewOnly` is true on the job or step.
+
+---
+
+## GET /api/cron/jobs/:id
+
+Read one scheduled job.
+
+---
+
+## PUT /api/cron/jobs/:id
+
+Update one scheduled job. Partial objects are accepted.
+
+---
+
+## DELETE /api/cron/jobs/:id
+
+Delete one scheduled job.
+
+---
+
+## POST /api/cron/jobs/:id/run
+
+Run a job immediately. Returns a sanitized run record.
+
+---
+
+## GET /api/cron/jobs/:id/memory
+
+Read `memory.md` for a job workspace.
+
+```json
+{
+  "workspaceDir": "/path/to/data/cron-jobs/daily-birthdays",
+  "text": "# Memory\n\nDurable notes..."
+}
+```
+
+---
+
+## PUT /api/cron/jobs/:id/memory
+
+Write `memory.md` for a job workspace.
+
+```json
+{ "text": "# Memory\n\n- Use the media team birthday tone.\n" }
+```
+
+---
+
+## GET /api/cron/runs
+
+Returns recent in-memory scheduler run records for the current gateway process.
+
+---
+
+## POST /api/cron/chat
+
+Ask Codex to review, create, update, delete, enable, disable, or run scheduler jobs through validated gateway operations.
+
+```json
+{
+  "message": "Set up a weekday 6 AM birthday job that pulls the birthday API, lets Codex draft copy and create the image artifact, then sends it to the media group."
+}
+```
+
+If Codex is not installed, the response includes install guidance.
+
+---
+
 ## GET /api/media/:filename
 
 Serve a media file that was downloaded from an incoming message.

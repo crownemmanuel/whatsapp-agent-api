@@ -3,6 +3,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { randomUUID } from "node:crypto"
 import { defaultCodexAgentConfig, normalizeCodexAgentConfig } from "./codex-agent.js"
+import { defaultCronJobsConfig, normalizeCronJobsConfig } from "./cron-jobs.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -16,6 +17,7 @@ export function defaultConfig() {
     openDocsOnStart: true,
     webhooks: [],
     codexAgent: defaultCodexAgentConfig(),
+    cronJobs: defaultCronJobsConfig(),
   }
 }
 
@@ -57,6 +59,10 @@ export function getCodexWorkspaceRoot() {
   return path.join(DATA_DIR, "codex-workspaces")
 }
 
+export function getCronJobsRoot() {
+  return path.join(DATA_DIR, "cron-jobs")
+}
+
 export function normalizeConfig(input) {
   const defaults = defaultConfig()
   const safe = input && typeof input === "object" ? input : {}
@@ -66,6 +72,7 @@ export function normalizeConfig(input) {
     openDocsOnStart: safe.openDocsOnStart !== false,
     webhooks: normalizeWebhooks(safe.webhooks),
     codexAgent: normalizeCodexAgentConfig(safe.codexAgent || defaults.codexAgent),
+    cronJobs: normalizeCronJobsConfig(safe.cronJobs || defaults.cronJobs),
   }
 }
 

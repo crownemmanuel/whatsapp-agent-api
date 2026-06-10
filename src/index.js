@@ -3,6 +3,7 @@ import pino from "pino"
 import {
   getMediaDir,
   getCodexWorkspaceRoot,
+  getCronJobsRoot,
   getQrPath,
   getSessionDir,
   loadConfig,
@@ -19,6 +20,7 @@ import {
   readCodexMemory,
   writeCodexMemory,
 } from "./codex-agent.js"
+import { CronJobScheduler } from "./cron-jobs.js"
 import { WhatsAppBridge, resetWhatsAppSession } from "./whatsapp.js"
 
 const LOG = pino({ name: "whatsapp-api-gateway", level: process.env.LOG_LEVEL || "info" })
@@ -29,6 +31,7 @@ async function main() {
   const mediaDir = getMediaDir()
   const qrPath = getQrPath()
   const defaultCodexWorkspaceRoot = getCodexWorkspaceRoot()
+  const cronJobsRoot = getCronJobsRoot()
 
   if (process.argv.includes("--rescan")) {
     console.log("Rescan requested: clearing WhatsApp session so you can scan the QR code again...")
@@ -145,7 +148,40 @@ async function main() {
     },
   }
 
-  createApiServer({ port: config.apiPort, mediaDir, bridge, webhooks, codexAgent })
+  const cronScheduler = new CronJobScheduler({
+    config: config.cronJobs,
+    rootDir: cronJobsRoot,
+    bridge,
+    saveConfig: async (cronJobsConfig) => {
+      config = await saveConfig({ ...config, cronJobs: cronJobsConfig })
+      return config.cronJobs
+    },
+  })
+
+  const cronJobs = {
+    get: () => config.cronJobs,
+    save: async (input) => cronScheduler.saveSchedulerConfig(input),
+    listJobs: () => cronScheduler.listJobs(),
+    getJob: (id) => cronScheduler.getJob(id),
+    addJob: async (input) => cronScheduler.upsertJob(input),
+    updateJob: async (id, input) => {
+      if (!cronScheduler.getJob(id)) return null
+      return cronScheduler.upsertJob({ ...(input || {}), id })
+    },
+    removeJob: async (id) => cronScheduler.removeJob(id),
+    runJob: async (id) => cronScheduler.runJobNow(id, "manual"),
+    status: async () => ({
+      ...cronScheduler.status(),
+      rootDir: cronJobsRoot,
+      codex: await checkCodexInstallStatus(),
+    }),
+    readMemory: async ({ jobId }) => cronScheduler.readMemory(jobId),
+    writeMemory: async ({ jobId, text }) => cronScheduler.writeMemory(jobId, text),
+    chat: async (input) => cronScheduler.chat(input),
+  }
+
+  createApiServer({ port: config.apiPort, mediaDir, bridge, webhooks, codexAgent, cronJobs })
+  cronScheduler.start()
 
   if (config.openDocsOnStart) {
     openInBrowser(`http://localhost:${config.apiPort}/ui`)
@@ -159,6 +195,7 @@ async function main() {
 
   const shutdown = async (signal) => {
     LOG.info({ signal }, "Shutting down")
+    cronScheduler.stop()
     await bridge.stop()
     process.exit(0)
   }

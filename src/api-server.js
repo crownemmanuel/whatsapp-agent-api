@@ -5,12 +5,12 @@ import { buildOpenApiSpec, renderManagementHtml, renderSwaggerHtml } from "./ope
 
 const MEDIA_FILENAME_REG = /^[a-zA-Z0-9_.-]+\.(jpe?g|png|gif|webp|mp4|ogg|mp3|bin|pdf)$/
 
-export function createApiServer({ port, mediaDir, bridge, webhooks, codexAgent }) {
+export function createApiServer({ port, mediaDir, bridge, webhooks, codexAgent, cronJobs }) {
   const openApiSpec = buildOpenApiSpec()
 
   const server = http.createServer(async (req, res) => {
     try {
-      await route(req, res, { mediaDir, bridge, webhooks, codexAgent, openApiSpec })
+      await route(req, res, { mediaDir, bridge, webhooks, codexAgent, cronJobs, openApiSpec })
     } catch (error) {
       sendJson(res, error?.statusCode || 500, {
         error: error instanceof Error ? error.message : String(error),
@@ -173,6 +173,64 @@ async function route(req, res, ctx) {
     const body = await readJson(req)
     if (!body.chatId) return sendJson(res, 400, { error: "`chatId` is required" })
     return sendJson(res, 200, await ctx.codexAgent.writeMemory(body))
+  }
+
+  // ---- Cron jobs ------------------------------------------------------------
+  if (method === "GET" && pathname === "/api/cron/status") {
+    return sendJson(res, 200, await ctx.cronJobs.status())
+  }
+  if (method === "GET" && pathname === "/api/cron/config") {
+    return sendJson(res, 200, ctx.cronJobs.get())
+  }
+  if (method === "PUT" && pathname === "/api/cron/config") {
+    return sendJson(res, 200, await ctx.cronJobs.save(await readJson(req)))
+  }
+  if (method === "GET" && pathname === "/api/cron/jobs") {
+    return sendJson(res, 200, ctx.cronJobs.listJobs())
+  }
+  if (method === "POST" && pathname === "/api/cron/jobs") {
+    const created = await ctx.cronJobs.addJob(await readJson(req))
+    if (!created) return sendJson(res, 400, { error: "Invalid cron job" })
+    return sendJson(res, 201, created)
+  }
+  if (method === "GET" && pathname === "/api/cron/runs") {
+    return sendJson(res, 200, (await ctx.cronJobs.status()).recentRuns || [])
+  }
+  if (method === "POST" && pathname === "/api/cron/chat") {
+    const body = await readJson(req)
+    return sendJson(res, 200, await ctx.cronJobs.chat(body))
+  }
+  const cronRunMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/run$/)
+  if (method === "POST" && cronRunMatch) {
+    return sendJson(res, 200, await ctx.cronJobs.runJob(decodeURIComponent(cronRunMatch[1])))
+  }
+  const cronMemoryMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)\/memory$/)
+  if (method === "GET" && cronMemoryMatch) {
+    return sendJson(res, 200, await ctx.cronJobs.readMemory({ jobId: decodeURIComponent(cronMemoryMatch[1]) }))
+  }
+  if (method === "PUT" && cronMemoryMatch) {
+    const body = await readJson(req)
+    return sendJson(
+      res,
+      200,
+      await ctx.cronJobs.writeMemory({ jobId: decodeURIComponent(cronMemoryMatch[1]), text: body.text || "" }),
+    )
+  }
+  const cronJobMatch = pathname.match(/^\/api\/cron\/jobs\/([^/]+)$/)
+  if (method === "GET" && cronJobMatch) {
+    const job = ctx.cronJobs.getJob(decodeURIComponent(cronJobMatch[1]))
+    if (!job) return sendJson(res, 404, { error: "Cron job not found" })
+    return sendJson(res, 200, job)
+  }
+  if (method === "PUT" && cronJobMatch) {
+    const updated = await ctx.cronJobs.updateJob(decodeURIComponent(cronJobMatch[1]), await readJson(req))
+    if (!updated) return sendJson(res, 404, { error: "Cron job not found" })
+    return sendJson(res, 200, updated)
+  }
+  if (method === "DELETE" && cronJobMatch) {
+    const removed = await ctx.cronJobs.removeJob(decodeURIComponent(cronJobMatch[1]))
+    if (!removed) return sendJson(res, 404, { error: "Cron job not found" })
+    return sendJson(res, 200, { ok: true })
   }
 
   // ---- Media files ----------------------------------------------------------

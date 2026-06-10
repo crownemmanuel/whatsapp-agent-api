@@ -5,7 +5,8 @@ description: >
   messages from a group or contact, search for groups and contacts by name to
   get their IDs, resolve a phone number to a WhatsApp ID, and manage webhooks
   that fire when messages arrive. Also manage Codex routing rules that forward
-  matching WhatsApp messages into Codex and return replies. Use this skill
+  matching WhatsApp messages into Codex and return replies, plus gateway cron
+  jobs that can run APIs/scripts/Codex and send WhatsApp output. Use this skill
   whenever the user asks to send a WhatsApp, message a group, find a group ID,
   read WhatsApp messages, set up a webhook for WhatsApp, connect WhatsApp to
   Codex, manage WhatsApp-triggered Codex memory/rules, or do anything involving this project's WhatsApp API
@@ -20,7 +21,7 @@ metadata:
 
 API base URL: `http://localhost:3399`
 Swagger docs: `http://localhost:3399/docs`
-Management UI (groups, contacts, webhooks, Codex): `http://localhost:3399/ui`
+Management UI (groups, contacts, webhooks, Cron, Codex): `http://localhost:3399/ui`
 
 See [full API reference](references/API_REFERENCE.md) for all endpoints, parameters, and response shapes.
 
@@ -158,6 +159,38 @@ Use `full-access` only for trusted chats/senders. The gateway ignores outgoing m
 
 ---
 
+## Cron jobs
+
+**Status/config:** `GET /api/cron/status`, `GET /api/cron/config`, `PUT /api/cron/config`
+
+**Create a job:**
+```
+POST /api/cron/jobs
+{
+  "name": "Daily birthdays",
+  "schedule": { "expression": "0 6 * * *", "timezone": "America/New_York" },
+  "previewOnly": false,
+  "env": { "API_KEY": "BIRTHDAY_API_KEY" },
+  "steps": [
+    { "type": "http", "id": "fetch", "url": "https://example.com/birthdays", "headers": { "authorization": "Bearer ${env:API_KEY}" }, "saveAs": "birthdays" },
+    { "type": "codex", "id": "draft", "prompt": "Draft and create artifacts from ${steps.birthdays.body}", "saveAs": "draft" },
+    { "type": "whatsapp", "id": "send", "to": "<group JID>", "text": "${steps.draft.text}", "mediaPath": "${steps.draft.imagePath}", "mediaType": "image" }
+  ]
+}
+```
+
+Secrets are stored as environment variable names only. The gateway resolves `${env:ALIAS}` at runtime. Job workspaces live under `data/cron-jobs/<job-id>/` with `memory.md`, `artifacts/`, `runs/`, and `thread.json`.
+
+**Operate jobs:** `GET/PUT/DELETE /api/cron/jobs/<id>`, `POST /api/cron/jobs/<id>/run`, `GET/PUT /api/cron/jobs/<id>/memory`
+
+**Ask Codex to manage jobs:**
+```
+POST /api/cron/chat
+{ "message": "Set up a weekday 6 AM birthday job that sends the result to the media group." }
+```
+
+---
+
 ## Quick decision table
 
 | Goal | Endpoint |
@@ -169,6 +202,8 @@ Use `full-access` only for trusted chats/senders. The gateway ignores outgoing m
 | Show "typing…" while working | `POST /api/chats/{id}/typing` with `{"state": "composing"}` |
 | Let Codex handle matching messages | `PUT /api/codex/config` → `POST /api/codex/rules` |
 | Edit per-chat Codex memory | `GET/PUT /api/codex/memory` |
+| Create a scheduled WhatsApp automation | `POST /api/cron/jobs` or `POST /api/cron/chat` |
+| Run or review a scheduled automation | `POST /api/cron/jobs/{id}/run`, `GET /api/cron/runs` |
 | Check if WhatsApp is online | `GET /api/status` |
 
 ---

@@ -35,7 +35,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test",
-    "check": "node --check src/index.js && node --check src/api-server.js && node --check src/whatsapp.js && node --check src/openapi.js && node --check src/config-store.js && node --check src/codex-agent.js",
+    "check": "node --check src/index.js && node --check src/api-server.js && node --check src/whatsapp.js && node --check src/openapi.js && node --check src/config-store.js && node --check src/codex-agent.js && node --check src/cron-jobs.js",
     "prepublishOnly": "npm run check"
   },
   "engines": {

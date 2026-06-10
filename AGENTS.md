@@ -11,12 +11,13 @@ Syntax check: `npm run check`
 
 | File | Role |
 |---|---|
-| `src/index.js` | Entry point — wires bridge → API server, dispatches webhooks |
+| `src/index.js` | Entry point — wires bridge → API server, dispatches webhooks, starts scheduler |
 | `src/whatsapp.js` | Baileys bridge — connection, contact/group directory, message buffer, send methods |
 | `src/api-server.js` | Plain-Node HTTP REST server |
 | `src/openapi.js` | OpenAPI 3 spec + Swagger UI HTML + management UI HTML |
-| `src/config-store.js` | Config (apiPort, openDocsOnStart, webhooks) read/write |
+| `src/config-store.js` | Config (apiPort, openDocsOnStart, webhooks, codexAgent, cronJobs) read/write |
 | `src/codex-agent.js` | Codex routing — rule matching, per-chat workspaces/memory, SDK execution |
+| `src/cron-jobs.js` | Gateway scheduler — cron parsing, job execution, per-job memory/artifacts, scheduler chat |
 | `bin/whatsappCC.js` | CLI entry — foreground or background mode |
 
 ## Key ports
@@ -35,6 +36,7 @@ See `skills/whatsapp-api/SKILL.md` — an open-standard Agent Skill (agentskills
 - WhatsApp session: `baileys-auth/`
 - Config + media: `data/`
 - Codex workspaces: `data/codex-workspaces/`
+- Cron job workspaces: `data/cron-jobs/`
 - QR code (first link): `wa-qr.png`
 - Log (background mode): `whatsapp-api-gateway.log`
 

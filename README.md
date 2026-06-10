@@ -6,10 +6,11 @@ A general-purpose WhatsApp API for agents. Connects to WhatsApp via Baileys and 
 
 - Connects to WhatsApp using Baileys. On first run it prints a QR code in the terminal (and writes `wa-qr.png`) for you to scan.
 - Exposes a REST API documented with **Swagger / OpenAPI**, opened automatically on startup.
-- Ships a clean **management web UI** to browse groups and contacts (with copy-ID buttons) and manage webhooks.
+- Ships a clean **management web UI** to browse groups and contacts (with copy-ID buttons), manage webhooks, configure Codex routing, and operate scheduled jobs.
 - Lets agents find a user or group by name, then send/read messages deterministically by ID.
 - Delivers incoming messages to webhook URLs you register (scoped to a chat or all chats).
 - Can route selected incoming messages to **Codex** with per-group/contact rules, per-rule sandbox mode, persistent chat folders, memory files, and automatic WhatsApp replies.
+- Can run gateway-owned **cron jobs** that call APIs, run scripts, wake Codex in a per-job workspace, and send results back through WhatsApp.
 
 ## Run
 
@@ -50,6 +51,12 @@ npm start -- --rescan
 | `GET/POST /api/codex/rules` | List/create Codex routing rules |
 | `PUT/DELETE /api/codex/rules/{id}` | Update/remove Codex routing rules |
 | `GET/PUT /api/codex/memory` | Read/write per-chat memory |
+| `GET/PUT /api/cron/config` | Read/update scheduler settings |
+| `GET/POST /api/cron/jobs` | List/create scheduled jobs |
+| `GET/PUT/DELETE /api/cron/jobs/{id}` | Read/update/remove a scheduled job |
+| `POST /api/cron/jobs/{id}/run` | Run a scheduled job immediately |
+| `GET/PUT /api/cron/jobs/{id}/memory` | Read/write per-job memory |
+| `POST /api/cron/chat` | Ask Codex to review or modify scheduler jobs |
 
 ### Send a text
 
@@ -116,6 +123,26 @@ If `/api/codex/status` reports Codex is not ready, install dependencies with:
 npm install
 ```
 
+### Cron jobs
+
+The **Cron** tab in `/ui` lets you enable the scheduler, create/edit jobs, run jobs manually, edit per-job memory, and chat with Codex to create or review jobs. Jobs are general pipelines made of steps:
+
+- `http` — call an API; headers and bodies can use templates such as `${env:API_KEY}`.
+- `transform` — pull or filter data from prior step output.
+- `script` — run a shell command inside the job workspace.
+- `codex` — wake Codex in the persistent job workspace to draft, analyze, edit files, or generate artifacts.
+- `whatsapp` — send text/media back to a group or user through the gateway.
+
+Secrets stay out of `data/config.json`. A job stores env aliases like `{ "API_KEY": "BIRTHDAY_API_KEY" }`, and the gateway resolves `${env:API_KEY}` from the process environment at runtime. WhatsApp sends are automatic by default; set `previewOnly` on the job or step for dry runs.
+
+Job workspaces default to:
+
+```text
+data/cron-jobs/<job-id>/
+```
+
+Each job workspace contains `memory.md`, `artifacts/`, `runs/`, and `thread.json`. For example, a birthday job can fetch today’s birthdays, ask Codex to draft the message and create the image artifact in `artifacts/`, then send the result to the media team WhatsApp group.
+
 ## Background mode
 
 If installed as a package:
@@ -128,9 +155,10 @@ whatsappAPI --rescan
 
 ## Notes
 
-- Config is saved at `data/config.json` (`apiPort`, `openDocsOnStart`, `webhooks`, `codexAgent`).
+- Config is saved at `data/config.json` (`apiPort`, `openDocsOnStart`, `webhooks`, `codexAgent`, `cronJobs`).
 - Incoming media is cached under `data/media/` and served at `/api/media/...`.
 - Codex chat workspaces are stored under `data/codex-workspaces/` unless `codexAgent.workspaceRoot` is set.
+- Cron job workspaces are stored under `data/cron-jobs/`.
 - `wa-qr.png` is generated for easy scanning.
 - Set `WA_OPEN_DOCS=0` to disable auto-opening the docs page on start.
 - Recent messages are buffered in memory per chat (last 200) for the read endpoint.

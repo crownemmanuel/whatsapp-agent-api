@@ -12,9 +12,10 @@ export function buildOpenApiSpec() {
       { name: "Status", description: "Connection status" },
       { name: "Directory", description: "Find groups and contacts (and their IDs)" },
       { name: "Messages", description: "Send and read messages" },
-      { name: "Webhooks", description: "Register URLs that fire on incoming messages" },
-      { name: "Codex", description: "Route matching WhatsApp messages to Codex" },
-    ],
+	      { name: "Webhooks", description: "Register URLs that fire on incoming messages" },
+	      { name: "Codex", description: "Route matching WhatsApp messages to Codex" },
+	      { name: "Cron", description: "Run scheduled gateway jobs and Codex-driven automations" },
+	    ],
     paths: {
       "/api/status": {
         get: {
@@ -255,14 +256,106 @@ export function buildOpenApiSpec() {
           responses: { 200: jsonResponse("Chat memory", "CodexMemory") },
         },
       },
-      "/api/codex/runs": {
-        get: {
-          tags: ["Codex"],
-          summary: "List recent Codex runs",
-          responses: { 200: jsonArrayResponse("Recent Codex runs", "CodexRun") },
-        },
-      },
-    },
+	      "/api/codex/runs": {
+	        get: {
+	          tags: ["Codex"],
+	          summary: "List recent Codex runs",
+	          responses: { 200: jsonArrayResponse("Recent Codex runs", "CodexRun") },
+	        },
+	      },
+	      "/api/cron/status": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "Cron scheduler status",
+	          responses: { 200: jsonResponse("Scheduler status", "CronStatus") },
+	        },
+	      },
+	      "/api/cron/config": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "Get cron scheduler config",
+	          responses: { 200: jsonResponse("Cron config", "CronConfig") },
+	        },
+	        put: {
+	          tags: ["Cron"],
+	          summary: "Update cron scheduler config",
+	          requestBody: jsonRequest("CronConfig"),
+	          responses: { 200: jsonResponse("Updated cron config", "CronConfig") },
+	        },
+	      },
+	      "/api/cron/jobs": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "List cron jobs",
+	          responses: { 200: jsonArrayResponse("Cron jobs", "CronJob") },
+	        },
+	        post: {
+	          tags: ["Cron"],
+	          summary: "Create a cron job",
+	          requestBody: jsonRequest("CronJob"),
+	          responses: { 201: jsonResponse("Created cron job", "CronJob") },
+	        },
+	      },
+	      "/api/cron/jobs/{id}": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "Get a cron job",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          responses: { 200: jsonResponse("Cron job", "CronJob"), 404: jsonResponse("Not found", "Error") },
+	        },
+	        put: {
+	          tags: ["Cron"],
+	          summary: "Update a cron job",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          requestBody: jsonRequest("CronJob"),
+	          responses: { 200: jsonResponse("Updated cron job", "CronJob"), 404: jsonResponse("Not found", "Error") },
+	        },
+	        delete: {
+	          tags: ["Cron"],
+	          summary: "Delete a cron job",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          responses: { 200: jsonResponse("Deleted", "Ok"), 404: jsonResponse("Not found", "Error") },
+	        },
+	      },
+	      "/api/cron/jobs/{id}/run": {
+	        post: {
+	          tags: ["Cron"],
+	          summary: "Run a cron job now",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          responses: { 200: jsonResponse("Cron run", "CronRun") },
+	        },
+	      },
+	      "/api/cron/jobs/{id}/memory": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "Read cron job memory",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          responses: { 200: jsonResponse("Cron memory", "CronMemory") },
+	        },
+	        put: {
+	          tags: ["Cron"],
+	          summary: "Write cron job memory",
+	          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+	          requestBody: jsonRequest("CronMemory"),
+	          responses: { 200: jsonResponse("Cron memory", "CronMemory") },
+	        },
+	      },
+	      "/api/cron/runs": {
+	        get: {
+	          tags: ["Cron"],
+	          summary: "List recent cron runs",
+	          responses: { 200: jsonArrayResponse("Recent cron runs", "CronRun") },
+	        },
+	      },
+	      "/api/cron/chat": {
+	        post: {
+	          tags: ["Cron"],
+	          summary: "Ask Codex to review or change scheduler jobs",
+	          requestBody: jsonRequest("CronChatRequest"),
+	          responses: { 200: jsonResponse("Codex scheduler chat result", "CronChatResponse") },
+	        },
+	      },
+	    },
     components: {
       schemas: {
         Status: {
@@ -453,9 +546,9 @@ export function buildOpenApiSpec() {
             text: { type: "string" },
           },
         },
-        CodexRun: {
-          type: "object",
-          properties: {
+	        CodexRun: {
+	          type: "object",
+	          properties: {
             id: { type: "string" },
             ruleId: { type: "string" },
             ruleName: { type: "string" },
@@ -468,10 +561,127 @@ export function buildOpenApiSpec() {
             error: { type: "string" },
             response: { type: "string" },
             workspaceDir: { type: "string" },
-            threadId: { type: "string" },
-          },
-        },
-        Ok: { type: "object", properties: { ok: { type: "boolean" } } },
+	            threadId: { type: "string" },
+	          },
+	        },
+	        CronConfig: {
+	          type: "object",
+	          properties: {
+	            enabled: { type: "boolean" },
+	            defaultTimezone: { type: "string", example: "America/New_York" },
+	            jobs: { type: "array", items: { $ref: "#/components/schemas/CronJob" } },
+	          },
+	        },
+	        CronStatus: {
+	          type: "object",
+	          properties: {
+	            enabled: { type: "boolean" },
+	            defaultTimezone: { type: "string" },
+	            jobCount: { type: "integer" },
+	            runningJobIds: { type: "array", items: { type: "string" } },
+	            rootDir: { type: "string" },
+	            jobs: { type: "array", items: { $ref: "#/components/schemas/CronJobSummary" } },
+	            recentRuns: { type: "array", items: { $ref: "#/components/schemas/CronRun" } },
+	            codex: { $ref: "#/components/schemas/CodexStatus" },
+	          },
+	        },
+	        CronJobSummary: {
+	          type: "object",
+	          properties: {
+	            id: { type: "string" },
+	            name: { type: "string" },
+	            enabled: { type: "boolean" },
+	            schedule: { type: "object" },
+	            previewOnly: { type: "boolean" },
+	            allowOverlap: { type: "boolean" },
+	            stepCount: { type: "integer" },
+	            lastRunAt: { type: "string" },
+	            nextRunAt: { type: "string" },
+	          },
+	        },
+	        CronJob: {
+	          type: "object",
+	          properties: {
+	            id: { type: "string", example: "birthdays" },
+	            name: { type: "string", example: "Daily birthdays" },
+	            enabled: { type: "boolean" },
+	            description: { type: "string" },
+	            schedule: {
+	              type: "object",
+	              properties: {
+	                mode: { type: "string", enum: ["cron"], default: "cron" },
+	                expression: { type: "string", example: "0 6 * * *" },
+	                timezone: { type: "string", example: "America/New_York" },
+	              },
+	            },
+	            previewOnly: { type: "boolean", description: "Dry-run WhatsApp sends when true" },
+	            allowOverlap: { type: "boolean" },
+	            workspaceSubdir: { type: "string" },
+	            env: {
+	              type: "object",
+	              additionalProperties: { type: "string" },
+	              description: "Map template aliases to environment variable names; secret values are never stored here.",
+	              example: { API_KEY: "BIRTHDAY_API_KEY" },
+	            },
+	            steps: { type: "array", items: { $ref: "#/components/schemas/CronStep" } },
+	          },
+	        },
+	        CronStep: {
+	          type: "object",
+	          properties: {
+	            id: { type: "string" },
+	            type: { type: "string", enum: ["http", "transform", "script", "codex", "whatsapp"] },
+	            saveAs: { type: "string" },
+	            continueOnError: { type: "boolean" },
+	          },
+	          additionalProperties: true,
+	        },
+	        CronRun: {
+	          type: "object",
+	          properties: {
+	            id: { type: "string" },
+	            jobId: { type: "string" },
+	            jobName: { type: "string" },
+	            trigger: { type: "string" },
+	            startedAt: { type: "string" },
+	            finishedAt: { type: "string", nullable: true },
+	            ok: { type: "boolean" },
+	            previewOnly: { type: "boolean" },
+	            workspaceDir: { type: "string" },
+	            steps: { type: "array", items: { type: "object" } },
+	            outputs: { type: "object" },
+	            error: { type: "string" },
+	          },
+	        },
+	        CronMemory: {
+	          type: "object",
+	          properties: {
+	            workspaceDir: { type: "string" },
+	            text: { type: "string" },
+	          },
+	        },
+	        CronChatRequest: {
+	          type: "object",
+	          required: ["message"],
+	          properties: {
+	            message: {
+	              type: "string",
+	              example: "Create a weekday 6 AM job that calls the birthday API, asks Codex to draft copy, and sends the result to the media group.",
+	            },
+	          },
+	        },
+	        CronChatResponse: {
+	          type: "object",
+	          properties: {
+	            ok: { type: "boolean" },
+	            changed: { type: "boolean" },
+	            message: { type: "string" },
+	            operation: { type: "object" },
+	            applied: { type: "object" },
+	            finalResponse: { type: "string" },
+	          },
+	        },
+	        Ok: { type: "object", properties: { ok: { type: "boolean" } } },
         Error: { type: "object", properties: { error: { type: "string" } } },
       },
     },
@@ -569,9 +779,10 @@ export function renderManagementHtml() {
     route: icon('<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
     folder: icon('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'),
     memory: icon('<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>'),
-    activity: icon('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
-    book: icon('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
-  }
+	    activity: icon('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
+	    book: icon('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
+	    clock: icon('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+	  }
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -681,9 +892,17 @@ export function renderManagementHtml() {
     .codex-master { display:flex; gap:12px; align-items:flex-start; cursor:pointer; }
     .codex-master input { margin-top:3px; }
     .codex-master strong { display:block; margin-bottom:4px; }
-    .info-box { background:var(--inset); border:1px solid var(--line); border-radius:var(--radius-sm); padding:11px 13px; font-size:.82rem; }
-    .info-box .id { display:block; margin-top:4px; word-break:break-all; }
-    @media (max-width: 880px) { .grid, .grid.three, .split { grid-template-columns:1fr; } .span2 { grid-column:auto; } main, .tabs { padding-left:14px; padding-right:14px; } }
+	    .info-box { background:var(--inset); border:1px solid var(--line); border-radius:var(--radius-sm); padding:11px 13px; font-size:.82rem; }
+	    .info-box .id { display:block; margin-top:4px; word-break:break-all; }
+	    .mono-area { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.82rem; min-height:150px; }
+	    .job-list { display:grid; gap:10px; margin-top:12px; }
+	    .job-card { background:var(--inset); border:1px solid var(--line); border-radius:12px; padding:13px; display:grid; gap:9px; }
+	    .job-card-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+	    .job-card h3 { margin:0; font-size:.95rem; font-weight:600; }
+	    .job-meta { display:flex; flex-wrap:wrap; gap:6px; }
+	    .chat-log { background:var(--inset); border:1px solid var(--line); border-radius:12px; padding:12px; min-height:96px; max-height:260px; overflow:auto; font-size:.86rem; line-height:1.45; white-space:pre-wrap; }
+	    .run-log { max-height:330px; overflow:auto; }
+	    @media (max-width: 880px) { .grid, .grid.three, .split { grid-template-columns:1fr; } .span2 { grid-column:auto; } main, .tabs { padding-left:14px; padding-right:14px; } }
     .toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%, 8px); background:var(--panel2); border:1px solid rgba(37,211,102,.4); color:var(--text); padding:11px 20px; border-radius:12px; font-size:.9rem; box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
     .toast.show { opacity:1; transform:translate(-50%, 0); }
   </style>
@@ -699,10 +918,11 @@ export function renderManagementHtml() {
   </header>
   <div class="tabs">
     <button data-tab="groups" class="active">${icons.users} Groups</button>
-    <button data-tab="contacts">${icons.user} Contacts</button>
-    <button data-tab="webhooks">${icons.zap} Webhooks</button>
-    <button data-tab="codex">${icons.bot} Codex</button>
-  </div>
+	    <button data-tab="contacts">${icons.user} Contacts</button>
+	    <button data-tab="webhooks">${icons.zap} Webhooks</button>
+	    <button data-tab="cron">${icons.clock} Cron</button>
+	    <button data-tab="codex">${icons.bot} Codex</button>
+	  </div>
   <main>
     <section id="tab-groups" class="panel">
       <h2>${icons.users} Groups</h2>
@@ -716,9 +936,9 @@ export function renderManagementHtml() {
       <table><thead><tr><th>Name</th><th>Number</th><th>ID</th><th></th></tr></thead><tbody id="contact-rows"></tbody></table>
     </section>
 
-    <section id="tab-webhooks" class="panel hidden">
-      <h2>${icons.zap} Webhooks</h2>
-      <form class="wh" id="wh-form">
+	    <section id="tab-webhooks" class="panel hidden">
+	      <h2>${icons.zap} Webhooks</h2>
+	      <form class="wh" id="wh-form">
         <label>Webhook URL (POST target)</label>
         <input id="wh-url" placeholder="https://my-agent.example.com/wa-hook" required>
         <label>Scope to chat ID (optional — blank = all chats)</label>
@@ -727,10 +947,111 @@ export function renderManagementHtml() {
         <input id="wh-secret" placeholder="sent as X-Webhook-Secret">
         <button class="primary" type="submit">Add Webhook</button>
       </form>
-      <table><thead><tr><th>URL</th><th>Chat</th><th>Created</th><th></th></tr></thead><tbody id="wh-rows"></tbody></table>
-    </section>
+	      <table><thead><tr><th>URL</th><th>Chat</th><th>Created</th><th></th></tr></thead><tbody id="wh-rows"></tbody></table>
+	    </section>
 
-    <section id="tab-codex" class="panel hidden">
+	    <section id="tab-cron" class="panel hidden">
+	      <div class="bar">
+	        <span id="cron-enabled-badge" class="badge">scheduler off</span>
+	        <span id="cron-codex-badge" class="badge">checking Codex</span>
+	        <span id="cron-root" class="muted grow"></span>
+	        <button id="cron-refresh" class="secondary" type="button">Refresh</button>
+	      </div>
+
+	      <div class="split">
+	        <div>
+	          <div class="codex-card">
+	            <h2>${icons.clock} Scheduler</h2>
+	            <form id="cron-config-form" class="grid">
+	              <label class="checkline"><input id="cron-enabled" type="checkbox"> Enabled</label>
+	              <div class="field">
+	                <label>Default timezone</label>
+	                <input id="cron-timezone" placeholder="America/New_York">
+	              </div>
+	              <button class="primary" type="submit">Save scheduler</button>
+	            </form>
+	          </div>
+
+	          <div class="codex-card">
+	            <h2>${icons.sliders} Job editor</h2>
+	            <form id="cron-job-form" class="grid">
+	              <div class="field">
+	                <label>Name</label>
+	                <input id="cron-job-name" placeholder="Daily birthdays" required>
+	              </div>
+	              <div class="field">
+	                <label>ID</label>
+	                <input id="cron-job-id" placeholder="daily-birthdays">
+	              </div>
+	              <div class="field">
+	                <label>Cron expression</label>
+	                <input id="cron-expression" placeholder="0 6 * * *" required>
+	              </div>
+	              <div class="field">
+	                <label>Timezone</label>
+	                <input id="cron-job-timezone" placeholder="America/New_York">
+	              </div>
+	              <label class="checkline"><input id="cron-job-enabled" type="checkbox" checked> Job enabled</label>
+	              <label class="checkline"><input id="cron-preview-only" type="checkbox"> Preview only</label>
+	              <label class="checkline"><input id="cron-allow-overlap" type="checkbox"> Allow overlap</label>
+	              <div></div>
+	              <div class="field span2">
+	                <label>Env aliases JSON</label>
+	                <textarea id="cron-env" class="mono-area" spellcheck="false"></textarea>
+	              </div>
+	              <div class="field span2">
+	                <label>Steps JSON</label>
+	                <textarea id="cron-steps" class="mono-area" spellcheck="false"></textarea>
+	              </div>
+	              <div class="rule-form-actions span2">
+	                <button class="primary" type="submit" id="cron-submit-btn">Add job</button>
+	                <button class="secondary hidden" type="button" id="cron-cancel-btn">Cancel</button>
+	              </div>
+	            </form>
+	          </div>
+
+	          <div class="codex-card">
+	            <h2>${icons.route} Jobs</h2>
+	            <div id="cron-job-list" class="job-list"></div>
+	          </div>
+	        </div>
+
+	        <div>
+	          <div class="codex-card">
+	            <h2>${icons.bot} Scheduler chat</h2>
+	            <form id="cron-chat-form" class="field">
+	              <label>Message Codex</label>
+	              <textarea id="cron-chat-message" placeholder="Set up a weekday 6 AM job that pulls birthdays and sends a WhatsApp draft"></textarea>
+	              <button class="primary" type="submit">Ask Codex</button>
+	            </form>
+	            <div id="cron-chat-log" class="chat-log muted">No scheduler chat yet.</div>
+	          </div>
+
+	          <div class="codex-card">
+	            <h2>${icons.memory} Job memory</h2>
+	            <form id="cron-memory-form" class="field">
+	              <label>Job</label>
+	              <select id="cron-memory-job"></select>
+	              <label>Memory notes</label>
+	              <textarea id="cron-memory-text" class="mono-area" placeholder="Load a job first"></textarea>
+	              <div class="bar">
+	                <button id="cron-memory-load" class="secondary" type="button">Load memory</button>
+	                <button class="primary" type="submit">Save memory</button>
+	              </div>
+	            </form>
+	          </div>
+
+	          <div class="codex-card">
+	            <h2>${icons.activity} Recent runs</h2>
+	            <div class="run-log">
+	              <table><thead><tr><th>Run</th><th>Status</th></tr></thead><tbody id="cron-run-rows"></tbody></table>
+	            </div>
+	          </div>
+	        </div>
+	      </div>
+	    </section>
+
+	    <section id="tab-codex" class="panel hidden">
       <div class="bar">
         <span id="codex-ready" class="badge">checking</span>
         <span id="codex-routing-badge" class="badge">routing off</span>
@@ -911,16 +1232,23 @@ export function renderManagementHtml() {
     const esc = (v) => { const d = document.createElement('div'); d.textContent = String(v ?? ''); return d.innerHTML; };
     const toast = (m) => { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1600); };
     const copy = (v) => { navigator.clipboard.writeText(v); toast('Copied ' + v); };
-    let codexRulesCache = [];
-    let editingRuleId = null;
-    let selectedChat = { id: '', label: 'Any matching chat' };
-    let selectedMemoryChat = { id: '', label: 'Choose a group or contact', isGroup: false };
+	    let codexRulesCache = [];
+	    let editingRuleId = null;
+	    let selectedChat = { id: '', label: 'Any matching chat' };
+	    let selectedMemoryChat = { id: '', label: 'Choose a group or contact', isGroup: false };
+	    let cronJobsCache = [];
+	    let editingCronJobId = null;
+	    const cronDefaultSteps = [
+	      { type: 'http', id: 'fetch', method: 'GET', url: 'https://example.com/api', headers: { authorization: 'Bearer \${env:API_KEY}' }, saveAs: 'fetch' },
+	      { type: 'codex', id: 'draft', prompt: 'Use \${steps.fetch.body} and the job memory to draft the WhatsApp response.', sandbox: 'workspace-write', saveAs: 'draft' },
+	      { type: 'whatsapp', id: 'send', to: '120363000000000000@g.us', text: '\${steps.draft.text}' },
+	    ];
 
     document.querySelectorAll('.tabs button').forEach((btn) => {
       btn.onclick = () => {
         document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        ['groups','contacts','webhooks','codex'].forEach((t) =>
+	        ['groups','contacts','webhooks','cron','codex'].forEach((t) =>
           document.getElementById('tab-' + t).classList.toggle('hidden', t !== btn.dataset.tab));
       };
     });
@@ -952,13 +1280,118 @@ export function renderManagementHtml() {
         : '<tr><td colspan="4" class="muted">No contacts yet.</td></tr>';
     }
 
-    async function loadWebhooks() {
-      const rows = await fetch('/api/webhooks').then((r) => r.json());
-      document.getElementById('wh-rows').innerHTML = rows.length ? rows.map((w) =>
-        '<tr><td class="id">' + esc(w.url) + '</td><td class="id">' + esc(w.chatId || 'all') + '</td><td class="muted">' +
-        esc((w.createdAt || '').slice(0, 10)) + '</td><td><button class="del" data-id="' + esc(w.id) + '">Delete</button></td></tr>').join('')
-        : '<tr><td colspan="4" class="muted">No webhooks.</td></tr>';
-    }
+	    async function loadWebhooks() {
+	      const rows = await fetch('/api/webhooks').then((r) => r.json());
+	      document.getElementById('wh-rows').innerHTML = rows.length ? rows.map((w) =>
+	        '<tr><td class="id">' + esc(w.url) + '</td><td class="id">' + esc(w.chatId || 'all') + '</td><td class="muted">' +
+	        esc((w.createdAt || '').slice(0, 10)) + '</td><td><button class="del" data-id="' + esc(w.id) + '">Delete</button></td></tr>').join('')
+	        : '<tr><td colspan="4" class="muted">No webhooks.</td></tr>';
+	    }
+
+	    async function loadCron() {
+	      const [cfg, status] = await Promise.all([
+	        fetch('/api/cron/config').then((r) => r.json()),
+	        fetch('/api/cron/status').then((r) => r.json()),
+	      ]);
+	      document.getElementById('cron-enabled').checked = !!cfg.enabled;
+	      document.getElementById('cron-timezone').value = cfg.defaultTimezone || 'America/New_York';
+	      document.getElementById('cron-job-timezone').placeholder = cfg.defaultTimezone || 'America/New_York';
+	      cronJobsCache = cfg.jobs || [];
+	      renderCronJobs(cronJobsCache, status.jobs || []);
+	      renderCronRuns(status.recentRuns || []);
+	      renderCronMemoryOptions();
+
+	      const badge = document.getElementById('cron-enabled-badge');
+	      badge.textContent = cfg.enabled ? 'scheduler on' : 'scheduler off';
+	      badge.className = 'badge ' + (cfg.enabled ? 'ok' : '');
+	      const codexBadge = document.getElementById('cron-codex-badge');
+	      codexBadge.textContent = status.codex?.ready ? 'Codex ready' : 'Install Codex SDK';
+	      codexBadge.className = 'badge ' + (status.codex?.ready ? 'ok' : '');
+	      document.getElementById('cron-root').textContent = status.rootDir || '';
+	    }
+
+	    function renderCronJobs(jobs, summaries) {
+	      const summaryById = Object.fromEntries((summaries || []).map((item) => [item.id, item]));
+	      document.getElementById('cron-job-list').innerHTML = jobs.length ? jobs.map((job) => {
+	        const summary = summaryById[job.id] || {};
+	        const meta = [
+	          job.enabled ? 'enabled' : 'disabled',
+	          job.previewOnly ? 'preview' : 'auto-send',
+	          (job.schedule?.expression || ''),
+	          summary.nextRunAt ? 'next ' + summary.nextRunAt.replace('T', ' ').slice(0, 16) : '',
+	        ].filter(Boolean).map((item) => '<span class="badge' + (item === 'enabled' ? ' ok' : '') + '">' + esc(item) + '</span>').join('');
+	        return '<div class="job-card"><div class="job-card-head"><div><h3>' + esc(job.name || job.id) +
+	          '</h3><div class="id">' + esc(job.id) + '</div></div><div class="rule-actions">' +
+	          '<button class="edit cron-edit" data-id="' + esc(job.id) + '">Edit</button>' +
+	          '<button class="edit cron-run" data-id="' + esc(job.id) + '">Run</button>' +
+	          '<button class="del cron-del" data-id="' + esc(job.id) + '">Delete</button>' +
+	          '</div></div><div class="job-meta">' + meta + '</div></div>';
+	      }).join('') : '<div class="job-card muted">No cron jobs.</div>';
+	    }
+
+	    function renderCronRuns(runs) {
+	      document.getElementById('cron-run-rows').innerHTML = runs.length ? runs.map((run) =>
+	        '<tr><td><b>' + esc(run.jobName || run.jobId || 'Cron job') + '</b><div class="id">' + esc(run.id || '') +
+	        '</div><div class="muted">' + esc((run.startedAt || '').replace('T', ' ').slice(0, 19)) +
+	        '</div></td><td>' + (run.ok ? '<span class="badge ok">ok</span>' : '<span class="badge">failed</span>') +
+	        '<div class="muted">' + esc(run.error || (run.previewOnly ? 'preview only' : run.trigger || '')) + '</div></td></tr>').join('')
+	        : '<tr><td colspan="2" class="muted">No cron runs yet.</td></tr>';
+	    }
+
+	    function renderCronMemoryOptions() {
+	      const select = document.getElementById('cron-memory-job');
+	      const current = select.value;
+	      select.innerHTML = cronJobsCache.length ? cronJobsCache.map((job) =>
+	        '<option value="' + esc(job.id) + '">' + esc(job.name || job.id) + '</option>').join('')
+	        : '<option value="">No jobs</option>';
+	      if (cronJobsCache.some((job) => job.id === current)) select.value = current;
+	    }
+
+	    function resetCronJobForm() {
+	      editingCronJobId = null;
+	      document.getElementById('cron-job-form').reset();
+	      document.getElementById('cron-job-enabled').checked = true;
+	      document.getElementById('cron-expression').value = '0 6 * * *';
+	      document.getElementById('cron-job-timezone').value = document.getElementById('cron-timezone').value || 'America/New_York';
+	      document.getElementById('cron-env').value = JSON.stringify({ API_KEY: 'BIRTHDAY_API_KEY' }, null, 2);
+	      document.getElementById('cron-steps').value = JSON.stringify(cronDefaultSteps, null, 2);
+	      document.getElementById('cron-submit-btn').textContent = 'Add job';
+	      document.getElementById('cron-cancel-btn').classList.add('hidden');
+	      document.getElementById('cron-job-id').disabled = false;
+	    }
+
+	    function populateCronJobForm(job) {
+	      editingCronJobId = job.id;
+	      document.getElementById('cron-job-name').value = job.name || '';
+	      document.getElementById('cron-job-id').value = job.id || '';
+	      document.getElementById('cron-job-id').disabled = true;
+	      document.getElementById('cron-expression').value = job.schedule?.expression || '0 6 * * *';
+	      document.getElementById('cron-job-timezone').value = job.schedule?.timezone || document.getElementById('cron-timezone').value || 'America/New_York';
+	      document.getElementById('cron-job-enabled').checked = job.enabled !== false;
+	      document.getElementById('cron-preview-only').checked = !!job.previewOnly;
+	      document.getElementById('cron-allow-overlap').checked = !!job.allowOverlap;
+	      document.getElementById('cron-env').value = JSON.stringify(job.env || {}, null, 2);
+	      document.getElementById('cron-steps').value = JSON.stringify(job.steps || [], null, 2);
+	      document.getElementById('cron-submit-btn').textContent = 'Save job';
+	      document.getElementById('cron-cancel-btn').classList.remove('hidden');
+	      document.getElementById('cron-job-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+	    }
+
+	    function cronJobFromForm() {
+	      return {
+	        name: document.getElementById('cron-job-name').value.trim(),
+	        id: document.getElementById('cron-job-id').value.trim(),
+	        enabled: document.getElementById('cron-job-enabled').checked,
+	        schedule: {
+	          expression: document.getElementById('cron-expression').value.trim(),
+	          timezone: document.getElementById('cron-job-timezone').value.trim() || document.getElementById('cron-timezone').value.trim(),
+	        },
+	        previewOnly: document.getElementById('cron-preview-only').checked,
+	        allowOverlap: document.getElementById('cron-allow-overlap').checked,
+	        env: parseJsonField('cron-env', {}),
+	        steps: parseJsonField('cron-steps', []),
+	      };
+	    }
 
     async function loadCodex() {
       const [cfg, status] = await Promise.all([
@@ -1162,12 +1595,30 @@ export function renderManagementHtml() {
     document.body.addEventListener('click', async (e) => {
       const copyBtn = e.target.closest('.copy');
       if (copyBtn) { copy(copyBtn.dataset.id); return; }
-      const editBtn = e.target.closest('.codex-edit');
-      if (editBtn) {
-        const rule = codexRulesCache.find((item) => item.id === editBtn.dataset.id);
-        if (rule) populateRuleForm(rule);
-        return;
-      }
+	      const editBtn = e.target.closest('.codex-edit');
+	      if (editBtn) {
+	        const rule = codexRulesCache.find((item) => item.id === editBtn.dataset.id);
+	        if (rule) populateRuleForm(rule);
+	        return;
+	      }
+	      const cronEditBtn = e.target.closest('.cron-edit');
+	      if (cronEditBtn) {
+	        const job = cronJobsCache.find((item) => item.id === cronEditBtn.dataset.id);
+	        if (job) {
+	          populateCronJobForm(job);
+	          document.getElementById('cron-memory-job').value = job.id;
+	        }
+	        return;
+	      }
+	      const cronRunBtn = e.target.closest('.cron-run');
+	      if (cronRunBtn) {
+	        toast('Cron job started');
+	        const res = await fetch('/api/cron/jobs/' + encodeURIComponent(cronRunBtn.dataset.id) + '/run', { method: 'POST' });
+	        const body = await res.json().catch(() => ({}));
+	        toast(res.ok && body.ok ? 'Cron job finished' : (body.error || 'Cron job failed'));
+	        loadCron();
+	        return;
+	      }
       const chatOption = e.target.closest('.combo-option');
       if (chatOption && chatOption.closest('#rule-chat-options')) {
         setSelectedChat(chatOption.dataset.id, chatOption.dataset.label);
@@ -1181,15 +1632,20 @@ export function renderManagementHtml() {
       }
       if (!e.target.closest('#rule-chat-combo')) closeChatMenu();
       if (!e.target.closest('#memory-chat-combo')) closeMemoryChatMenu();
-      const delBtn = e.target.closest('.del');
-      if (delBtn) {
-        if (delBtn.classList.contains('codex-del')) {
-          await fetch('/api/codex/rules/' + encodeURIComponent(delBtn.dataset.id), { method: 'DELETE' });
-          if (editingRuleId === delBtn.dataset.id) resetRuleForm();
-          loadCodex();
-        } else {
-          await fetch('/api/webhooks/' + encodeURIComponent(delBtn.dataset.id), { method: 'DELETE' });
-          loadWebhooks();
+	      const delBtn = e.target.closest('.del');
+	      if (delBtn) {
+	        if (delBtn.classList.contains('codex-del')) {
+	          await fetch('/api/codex/rules/' + encodeURIComponent(delBtn.dataset.id), { method: 'DELETE' });
+	          if (editingRuleId === delBtn.dataset.id) resetRuleForm();
+	          loadCodex();
+	        } else if (delBtn.classList.contains('cron-del')) {
+	          await fetch('/api/cron/jobs/' + encodeURIComponent(delBtn.dataset.id), { method: 'DELETE' });
+	          if (editingCronJobId === delBtn.dataset.id) resetCronJobForm();
+	          toast('Cron job deleted');
+	          loadCron();
+	        } else {
+	          await fetch('/api/webhooks/' + encodeURIComponent(delBtn.dataset.id), { method: 'DELETE' });
+	          loadWebhooks();
         }
       }
     });
@@ -1197,19 +1653,105 @@ export function renderManagementHtml() {
     document.getElementById('group-search').addEventListener('input', debounce(loadGroups, 200));
     document.getElementById('contact-search').addEventListener('input', debounce(loadContacts, 200));
 
-    document.getElementById('wh-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const body = {
-        url: document.getElementById('wh-url').value.trim(),
+	    document.getElementById('wh-form').addEventListener('submit', async (e) => {
+	      e.preventDefault();
+	      const body = {
+	        url: document.getElementById('wh-url').value.trim(),
         chatId: document.getElementById('wh-chat').value.trim() || undefined,
         secret: document.getElementById('wh-secret').value.trim() || undefined,
       };
       const res = await fetch('/api/webhooks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (res.ok) { e.target.reset(); toast('Webhook added'); loadWebhooks(); }
-      else { const b = await res.json().catch(() => ({})); toast(b.error || 'Failed'); }
-    });
+	      else { const b = await res.json().catch(() => ({})); toast(b.error || 'Failed'); }
+	    });
 
-    document.getElementById('codex-refresh').addEventListener('click', loadCodex);
+	    document.getElementById('cron-refresh').addEventListener('click', loadCron);
+	    document.getElementById('cron-cancel-btn').addEventListener('click', resetCronJobForm);
+
+	    document.getElementById('cron-config-form').addEventListener('submit', async (e) => {
+	      e.preventDefault();
+	      const body = {
+	        enabled: document.getElementById('cron-enabled').checked,
+	        defaultTimezone: document.getElementById('cron-timezone').value.trim() || 'America/New_York',
+	      };
+	      const res = await fetch('/api/cron/config', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+	      if (res.ok) { toast('Scheduler saved'); loadCron(); }
+	      else { const b = await res.json().catch(() => ({})); toast(b.error || 'Failed'); }
+	    });
+
+	    document.getElementById('cron-enabled').addEventListener('change', async (e) => {
+	      const enabled = e.target.checked;
+	      const res = await fetch('/api/cron/config', {
+	        method: 'PUT',
+	        headers: { 'content-type': 'application/json' },
+	        body: JSON.stringify({ enabled, defaultTimezone: document.getElementById('cron-timezone').value.trim() || 'America/New_York' }),
+	      });
+	      if (res.ok) { toast(enabled ? 'Scheduler enabled' : 'Scheduler disabled'); loadCron(); }
+	      else {
+	        const b = await res.json().catch(() => ({}));
+	        toast(b.error || 'Failed');
+	        e.target.checked = !enabled;
+	      }
+	    });
+
+	    document.getElementById('cron-job-form').addEventListener('submit', async (e) => {
+	      e.preventDefault();
+	      let body;
+	      try { body = cronJobFromForm(); }
+	      catch (err) { toast(err.message); return; }
+	      const url = editingCronJobId ? '/api/cron/jobs/' + encodeURIComponent(editingCronJobId) : '/api/cron/jobs';
+	      const method = editingCronJobId ? 'PUT' : 'POST';
+	      const res = await fetch(url, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+	      const out = await res.json().catch(() => ({}));
+	      if (res.ok) {
+	        toast(editingCronJobId ? 'Cron job updated' : 'Cron job added');
+	        resetCronJobForm();
+	        loadCron();
+	      } else toast(out.error || 'Failed');
+	    });
+
+	    document.getElementById('cron-memory-load').addEventListener('click', async () => {
+	      const jobId = document.getElementById('cron-memory-job').value;
+	      if (!jobId) return toast('Choose a job');
+	      const res = await fetch('/api/cron/jobs/' + encodeURIComponent(jobId) + '/memory');
+	      const body = await res.json().catch(() => ({}));
+	      if (res.ok) { document.getElementById('cron-memory-text').value = body.text || ''; toast('Memory loaded'); }
+	      else toast(body.error || 'Failed');
+	    });
+
+	    document.getElementById('cron-memory-form').addEventListener('submit', async (e) => {
+	      e.preventDefault();
+	      const jobId = document.getElementById('cron-memory-job').value;
+	      if (!jobId) return toast('Choose a job');
+	      const res = await fetch('/api/cron/jobs/' + encodeURIComponent(jobId) + '/memory', {
+	        method: 'PUT',
+	        headers: { 'content-type': 'application/json' },
+	        body: JSON.stringify({ text: document.getElementById('cron-memory-text').value }),
+	      });
+	      const body = await res.json().catch(() => ({}));
+	      if (res.ok) { document.getElementById('cron-memory-text').value = body.text || ''; toast('Memory saved'); }
+	      else toast(body.error || 'Failed');
+	    });
+
+	    document.getElementById('cron-chat-form').addEventListener('submit', async (e) => {
+	      e.preventDefault();
+	      const message = document.getElementById('cron-chat-message').value.trim();
+	      if (!message) return toast('Message Codex first');
+	      const log = document.getElementById('cron-chat-log');
+	      log.classList.remove('muted');
+	      log.textContent = 'Codex is working...';
+	      const res = await fetch('/api/cron/chat', {
+	        method: 'POST',
+	        headers: { 'content-type': 'application/json' },
+	        body: JSON.stringify({ message }),
+	      });
+	      const body = await res.json().catch(() => ({}));
+	      log.textContent = body.message || body.error || 'No response';
+	      toast(res.ok && body.ok !== false ? 'Codex replied' : 'Codex could not run');
+	      loadCron();
+	    });
+
+	    document.getElementById('codex-refresh').addEventListener('click', loadCodex);
 
     document.getElementById('codex-enabled').addEventListener('change', async (e) => {
       const enabled = e.target.checked;
@@ -1325,11 +1867,18 @@ export function renderManagementHtml() {
       else toast(out.error || 'Failed');
     });
 
-    function debounce(fn, ms) { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; }
-    function lines(id) { return document.getElementById(id).value.split(/\\n|,/).map((v) => v.trim()).filter(Boolean); }
+	    function debounce(fn, ms) { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; }
+	    function lines(id) { return document.getElementById(id).value.split(/\\n|,/).map((v) => v.trim()).filter(Boolean); }
+	    function parseJsonField(id, fallback) {
+	      const raw = document.getElementById(id).value.trim();
+	      if (!raw) return fallback;
+	      try { return JSON.parse(raw); }
+	      catch { throw new Error('Invalid JSON in ' + id); }
+	    }
 
-    loadStatus(); loadGroups(); loadContacts(); loadWebhooks(); loadCodex();
-    setInterval(loadStatus, 5000);
+	    resetCronJobForm();
+	    loadStatus(); loadGroups(); loadContacts(); loadWebhooks(); loadCron(); loadCodex();
+	    setInterval(loadStatus, 5000);
   </script>
 </body>
 </html>`
