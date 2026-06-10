@@ -4,13 +4,13 @@
 
 Add a gateway-owned scheduler to the WhatsApp API Gateway. The scheduler runs only while the gateway process is running, stores jobs in the existing config/data model, exposes a sleek management UI, and lets Codex create, edit, review, and operate jobs through internal APIs.
 
-The system must support general cron jobs, not only birthdays. The birthday automation is the benchmark use case: fetch a team birthday API every morning, draft a message with Codex, generate a birthday image from a template and profile photo with the OpenAI Image API, then send text and media to a WhatsApp group.
+The system must support general cron jobs, not only birthdays. The birthday automation is the benchmark use case: fetch a team birthday API every morning, draft a message with Codex, have Codex generate or edit the birthday image artifact from a template and profile photo, then send text and media to a WhatsApp group.
 
 ## Goals
 
 - Manage scheduled jobs from `/ui` without relying on OS cron, launchd, or external process managers.
 - Support recurring schedules with timezone-aware cron expressions and simple UI presets.
-- Support job steps for HTTP calls, local scripts, Codex turns, image generation/editing, JSON transforms, and WhatsApp sends.
+- Support job steps for HTTP calls, local scripts, Codex turns, JSON transforms, and WhatsApp sends.
 - Let Codex chat inside the UI create, update, inspect, disable, and review scheduler jobs.
 - Keep secrets out of `data/config.json`; jobs store environment variable names, and the gateway reads values from `.env`/process env at runtime.
 - Persist job workspaces, memory, artifacts, run logs, and generated media under `data/cron-jobs/`.
@@ -54,7 +54,7 @@ WhatsAppBridge
   -> message APIs
   -> Codex router
   -> Cron scheduler
-       -> HTTP/script/Codex/image/WhatsApp steps
+       -> HTTP/script/Codex/WhatsApp steps
        -> data/cron-jobs/<job-id>/
 ```
 
@@ -91,8 +91,7 @@ Each job:
   "allowOverlap": false,
   "workspaceSubdir": "media-team-birthdays",
   "env": {
-    "BIRTHDAY_API_KEY": "BIRTHDAY_API_KEY",
-    "OPENAI_API_KEY": "OPENAI_API_KEY"
+    "BIRTHDAY_API_KEY": "BIRTHDAY_API_KEY"
   },
   "steps": [],
   "createdAt": "2026-06-10T00:00:00.000Z",
@@ -190,29 +189,30 @@ Runs Codex in the job workspace using the existing SDK patterns. It can use job 
 
 Codex can also operate the scheduler via internal APIs from the UI chat. That is separate from scheduled Codex steps.
 
-### Image Step
+### Codex Artifact Step Pattern
 
-Uses the OpenAI Image API to generate or edit images. Current OpenAI docs describe `gpt-image-2` as supporting image generation and editing with text and image inputs, and GPT image models return base64 image data by default. The step should support template image paths/URLs and profile image URLs from previous steps.
+The scheduler does not need a separate image-generation step in v1. Image generation and editing should happen inside a Codex step, using the Codex SDK and the job workspace. The job prompt tells Codex where the template, profile photo, and output folder live, and Codex returns structured metadata for the produced artifact.
 
 ```json
 {
-  "type": "image",
+  "type": "codex",
   "id": "birthdayDesign",
-  "model": "gpt-image-2",
-  "mode": "edit",
-  "inputs": [
-    "${workspace:templates/birthday-template.png}",
-    "${steps.people[0].photoUrl}"
-  ],
-  "prompt": "Create a birthday announcement using the template. Place the person's photo naturally, update the visible name to ${steps.people[0].name}, and preserve the brand style.",
-  "size": "1536x1024",
-  "quality": "high",
-  "outputFormat": "png",
+  "prompt": "Use artifacts/templates/birthday-template.png and ${steps.people[0].photoUrl} to create a birthday image for ${steps.people[0].name}. Save the final image under artifacts/birthday-${steps.people[0].id}.png and return its path.",
+  "sandbox": "workspace-write",
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "imagePath": { "type": "string" },
+      "caption": { "type": "string" }
+    },
+    "required": ["imagePath", "caption"],
+    "additionalProperties": false
+  },
   "saveAs": "birthdayImage"
 }
 ```
 
-The implementation should use `OPENAI_API_KEY` from env. The UI stores only the model/options and env var name.
+This keeps model/provider details inside Codex and avoids duplicating image generation capability in the gateway. The scheduler only needs to pass context, preserve artifacts, and let later steps reference the returned file path.
 
 ### WhatsApp Step
 
@@ -224,7 +224,7 @@ Sends text and/or media through the existing bridge.
   "id": "sendBirthday",
   "to": "120363204563219847@g.us",
   "text": "${steps.drafts.messages[0].text}",
-  "mediaPath": "${steps.birthdayImage.path}",
+  "mediaPath": "${steps.birthdayImage.imagePath}",
   "mediaType": "image",
   "caption": "${steps.drafts.messages[0].caption}"
 }
@@ -301,8 +301,8 @@ Flow:
 1. `http` fetches today’s birthdays from the media team API using `${env:BIRTHDAY_API_KEY}`.
 2. `transform` selects birthdays for the current date and normalizes `{ name, phone, photoUrl, role, stats }`.
 3. `codex` drafts friendly birthday copy and short captions.
-4. `image` edits the birthday template with each person’s photo/name.
-5. `whatsapp` sends text plus generated image to the configured WhatsApp group.
+4. `codex` creates or edits the birthday image artifact in the job workspace using the template and profile photo.
+5. `whatsapp` sends text plus the Codex-generated image to the configured WhatsApp group.
 6. If there are no birthdays, the job records a successful no-op run.
 
 This validates the scheduler against a realistic workflow while keeping the system reusable for other jobs.
@@ -314,7 +314,7 @@ This validates the scheduler against a realistic workflow while keeping the syst
 - Secrets are redacted from logs with a fixed `[redacted:ENV_NAME]` marker.
 - WhatsApp disconnected errors mark the run failed and visible in the UI.
 - Codex unavailable errors show install/auth guidance from the existing Codex status helper.
-- Image API errors preserve the request metadata without storing secret headers.
+- Codex artifact errors preserve the request context and generated logs without storing secret values.
 
 ## Security
 
@@ -341,7 +341,7 @@ Add unit tests for:
 
 Add integration-style tests using fake step executors for:
 
-- Successful HTTP -> transform -> Codex -> image -> WhatsApp job.
+- Successful HTTP -> transform -> Codex artifact -> WhatsApp job.
 - No birthdays no-op run.
 - Failed API call stops job and records sanitized error.
 - Disabled scheduler/job does not run.
@@ -357,5 +357,4 @@ Manual verification:
 ## OpenAI Docs Notes
 
 - Codex SDK: use server-side `@openai/codex-sdk` threads and persistent thread IDs for job workspaces.
-- Image API: use `gpt-image-2` for image generation/editing. GPT image models support image inputs and can return base64 image output suitable for saving under job artifacts.
-- Image edits: support source images such as a brand template and a profile photo, then prompt the model to create the final birthday design.
+- Image/design work for scheduled jobs is handled by Codex inside the job workspace. The gateway does not need a separate Image API client in v1.
