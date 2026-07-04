@@ -11,6 +11,7 @@ wa-qr.png
 .env.*
 *.md
 !README.md
+!LICENSE
 
 # IDE / OS
 .DS_Store

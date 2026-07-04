@@ -1,8 +1,8 @@
 {
-  "name": "whatsapp-api-gateway",
+  "name": "whatsapp-agent-api",
   "version": "1.0.0",
   "type": "module",
-  "description": "General-purpose WhatsApp API gateway for agents (Baileys + OpenAPI/Swagger)",
+  "description": "General-purpose WhatsApp agent API gateway with Codex routing, cron jobs, and OpenAPI docs.",
   "keywords": [
     "whatsapp",
     "api",
@@ -14,15 +14,15 @@
     "webhooks"
   ],
   "license": "MIT",
-  "author": "",
+  "author": "Emmanuel Crown",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-username/whatsapp-api-gateway.git"
+    "url": "git+https://github.com/crownemmanuel/whatsapp-agent-api.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/whatsapp-api-gateway/issues"
+    "url": "https://github.com/crownemmanuel/whatsapp-agent-api/issues"
   },
-  "homepage": "https://github.com/your-username/whatsapp-api-gateway#readme",
+  "homepage": "https://github.com/crownemmanuel/whatsapp-agent-api#readme",
   "main": "src/index.js",
   "bin": {
     "whatsappAPI": "bin/whatsappCC.js"

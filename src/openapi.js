@@ -900,9 +900,16 @@ export function renderManagementHtml() {
 	    .job-card-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
 	    .job-card h3 { margin:0; font-size:.95rem; font-weight:600; }
 	    .job-meta { display:flex; flex-wrap:wrap; gap:6px; }
+	    .schedule-builder { background:var(--inset); border:1px solid var(--line); border-radius:12px; padding:13px; display:grid; gap:12px; }
+	    .schedule-row { display:grid; grid-template-columns:minmax(0,1fr) 150px minmax(120px,170px); gap:12px; align-items:end; }
+	    .weekday-picker { display:flex; gap:6px; flex-wrap:wrap; }
+	    .weekday-chip { background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:999px; min-width:42px; height:34px; padding:0 11px; cursor:pointer; font-size:.78rem; font-weight:600; font-family:inherit; transition:background .15s, color .15s, border-color .15s; }
+	    .weekday-chip:hover { color:var(--text); border-color:rgba(37,211,102,.45); }
+	    .weekday-chip.active { color:#08240f; background:var(--accent); border-color:var(--accent); }
+	    .schedule-summary { border-top:1px solid var(--line-soft); padding-top:10px; color:var(--muted); font-size:.86rem; }
 	    .chat-log { background:var(--inset); border:1px solid var(--line); border-radius:12px; padding:12px; min-height:96px; max-height:260px; overflow:auto; font-size:.86rem; line-height:1.45; white-space:pre-wrap; }
 	    .run-log { max-height:330px; overflow:auto; }
-	    @media (max-width: 880px) { .grid, .grid.three, .split { grid-template-columns:1fr; } .span2 { grid-column:auto; } main, .tabs { padding-left:14px; padding-right:14px; } }
+	    @media (max-width: 880px) { .grid, .grid.three, .split, .schedule-row { grid-template-columns:1fr; } .span2 { grid-column:auto; } main, .tabs { padding-left:14px; padding-right:14px; } }
     .toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%, 8px); background:var(--panel2); border:1px solid rgba(37,211,102,.4); color:var(--text); padding:11px 20px; border-radius:12px; font-size:.9rem; box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
     .toast.show { opacity:1; transform:translate(-50%, 0); }
   </style>
@@ -987,11 +994,46 @@ export function renderManagementHtml() {
 	                <label>Cron expression</label>
 	                <input id="cron-expression" placeholder="0 6 * * *" required>
 	              </div>
-	              <div class="field">
-	                <label>Timezone</label>
-	                <input id="cron-job-timezone" placeholder="America/New_York">
-	              </div>
-	              <label class="checkline"><input id="cron-job-enabled" type="checkbox" checked> Job enabled</label>
+		              <div class="field">
+		                <label>Timezone</label>
+		                <input id="cron-job-timezone" placeholder="America/New_York">
+		              </div>
+		              <div class="schedule-builder span2">
+		                <div class="schedule-row">
+		                  <div class="field">
+		                    <label>Visual schedule</label>
+		                    <select id="cron-schedule-mode">
+		                      <option value="daily">Every day</option>
+		                      <option value="weekdays">Weekdays</option>
+		                      <option value="weekly">Selected weekdays</option>
+		                      <option value="monthly">Monthly</option>
+		                      <option value="custom">Custom cron</option>
+		                    </select>
+		                  </div>
+		                  <div class="field">
+		                    <label>Time</label>
+		                    <input id="cron-schedule-time" type="time" value="06:00">
+		                  </div>
+		                  <div class="field hidden" id="cron-monthday-field">
+		                    <label>Day</label>
+		                    <input id="cron-monthday" type="number" min="1" max="31" value="1">
+		                  </div>
+		                </div>
+		                <div class="field hidden" id="cron-weekday-field">
+		                  <label>Days</label>
+		                  <div class="weekday-picker">
+		                    <button type="button" class="weekday-chip" data-day="1">Mon</button>
+		                    <button type="button" class="weekday-chip" data-day="2">Tue</button>
+		                    <button type="button" class="weekday-chip" data-day="3">Wed</button>
+		                    <button type="button" class="weekday-chip" data-day="4">Thu</button>
+		                    <button type="button" class="weekday-chip" data-day="5">Fri</button>
+		                    <button type="button" class="weekday-chip" data-day="6">Sat</button>
+		                    <button type="button" class="weekday-chip" data-day="0">Sun</button>
+		                  </div>
+		                </div>
+		                <div class="schedule-summary" id="cron-schedule-summary">Every day at 6:00 AM.</div>
+		              </div>
+		              <label class="checkline"><input id="cron-job-enabled" type="checkbox" checked> Job enabled</label>
 	              <label class="checkline"><input id="cron-preview-only" type="checkbox"> Preview only</label>
 	              <label class="checkline"><input id="cron-allow-overlap" type="checkbox"> Allow overlap</label>
 	              <div></div>
@@ -1243,6 +1285,15 @@ export function renderManagementHtml() {
 	      { type: 'codex', id: 'draft', prompt: 'Use \${steps.fetch.body} and the job memory to draft the WhatsApp response.', sandbox: 'workspace-write', saveAs: 'draft' },
 	      { type: 'whatsapp', id: 'send', to: '120363000000000000@g.us', text: '\${steps.draft.text}' },
 	    ];
+	    const cronDayNames = {
+	      0: 'Sunday',
+	      1: 'Monday',
+	      2: 'Tuesday',
+	      3: 'Wednesday',
+	      4: 'Thursday',
+	      5: 'Friday',
+	      6: 'Saturday',
+	    };
 
     document.querySelectorAll('.tabs button').forEach((btn) => {
       btn.onclick = () => {
@@ -1315,10 +1366,10 @@ export function renderManagementHtml() {
 	      document.getElementById('cron-job-list').innerHTML = jobs.length ? jobs.map((job) => {
 	        const summary = summaryById[job.id] || {};
 	        const meta = [
-	          job.enabled ? 'enabled' : 'disabled',
-	          job.previewOnly ? 'preview' : 'auto-send',
-	          (job.schedule?.expression || ''),
-	          summary.nextRunAt ? 'next ' + summary.nextRunAt.replace('T', ' ').slice(0, 16) : '',
+		          job.enabled ? 'enabled' : 'disabled',
+		          job.previewOnly ? 'preview' : 'auto-send',
+		          describeCronExpression(job.schedule?.expression || ''),
+		          summary.nextRunAt ? 'next ' + summary.nextRunAt.replace('T', ' ').slice(0, 16) : '',
 	        ].filter(Boolean).map((item) => '<span class="badge' + (item === 'enabled' ? ' ok' : '') + '">' + esc(item) + '</span>').join('');
 	        return '<div class="job-card"><div class="job-card-head"><div><h3>' + esc(job.name || job.id) +
 	          '</h3><div class="id">' + esc(job.id) + '</div></div><div class="rule-actions">' +
@@ -1358,6 +1409,7 @@ export function renderManagementHtml() {
 	      document.getElementById('cron-submit-btn').textContent = 'Add job';
 	      document.getElementById('cron-cancel-btn').classList.add('hidden');
 	      document.getElementById('cron-job-id').disabled = false;
+	      syncScheduleBuilderFromExpression();
 	    }
 
 	    function populateCronJobForm(job) {
@@ -1374,6 +1426,7 @@ export function renderManagementHtml() {
 	      document.getElementById('cron-steps').value = JSON.stringify(job.steps || [], null, 2);
 	      document.getElementById('cron-submit-btn').textContent = 'Save job';
 	      document.getElementById('cron-cancel-btn').classList.remove('hidden');
+	      syncScheduleBuilderFromExpression();
 	      document.getElementById('cron-job-form').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 	    }
 
@@ -1393,7 +1446,157 @@ export function renderManagementHtml() {
 	      };
 	    }
 
-    async function loadCodex() {
+	    function syncScheduleBuilderFromExpression() {
+	      const expression = document.getElementById('cron-expression').value.trim();
+	      const parsed = parseCronExpressionForBuilder(expression);
+	      document.getElementById('cron-schedule-mode').value = parsed.mode;
+	      if (parsed.time) document.getElementById('cron-schedule-time').value = parsed.time;
+	      if (parsed.monthday) document.getElementById('cron-monthday').value = parsed.monthday;
+	      setCronWeekdays(parsed.days || []);
+	      renderScheduleBuilderState(parsed.summary);
+	    }
+
+	    function applyScheduleBuilderToExpression() {
+	      const mode = document.getElementById('cron-schedule-mode').value;
+	      if (mode === 'custom') {
+	        renderScheduleBuilderState(describeCronExpression(document.getElementById('cron-expression').value.trim()));
+	        return;
+	      }
+	      const time = getScheduleTimeParts();
+	      let expression = time.minute + ' ' + time.hour + ' * * *';
+	      if (mode === 'weekdays') expression = time.minute + ' ' + time.hour + ' * * 1-5';
+	      if (mode === 'weekly') {
+	        const days = getCronWeekdays();
+	        expression = time.minute + ' ' + time.hour + ' * * ' + (days.length ? days.join(',') : '1');
+	      }
+	      if (mode === 'monthly') {
+	        const day = clampNumber(document.getElementById('cron-monthday').value, 1, 31, 1);
+	        document.getElementById('cron-monthday').value = String(day);
+	        expression = time.minute + ' ' + time.hour + ' ' + day + ' * *';
+	      }
+	      document.getElementById('cron-expression').value = expression;
+	      syncScheduleBuilderFromExpression();
+	    }
+
+	    function renderScheduleBuilderState(summary) {
+	      const mode = document.getElementById('cron-schedule-mode').value;
+	      document.getElementById('cron-weekday-field').classList.toggle('hidden', mode !== 'weekly');
+	      document.getElementById('cron-monthday-field').classList.toggle('hidden', mode !== 'monthly');
+	      document.getElementById('cron-schedule-time').disabled = mode === 'custom';
+	      document.querySelectorAll('.weekday-chip').forEach((button) => {
+	        button.disabled = mode !== 'weekly';
+	      });
+	      document.getElementById('cron-schedule-summary').textContent = summary || describeCronExpression(document.getElementById('cron-expression').value.trim());
+	    }
+
+	    function parseCronExpressionForBuilder(expression) {
+	      const parts = String(expression || '').trim().split(/\\s+/).filter(Boolean);
+	      if (parts.length !== 5) return { mode: 'custom', summary: 'Custom cron expression.' };
+	      const minute = parseCronNumber(parts[0], 0, 59);
+	      const hour = parseCronNumber(parts[1], 0, 23);
+	      if (minute === null || hour === null || parts[3] !== '*') return { mode: 'custom', summary: 'Custom cron: ' + expression };
+	      const time = pad2(hour) + ':' + pad2(minute);
+	      const days = parseCronDays(parts[4]);
+	      if (parts[2] === '*' && parts[4] === '*') {
+	        return { mode: 'daily', time, days: [], summary: 'Every day at ' + formatTime(hour, minute) + '.' };
+	      }
+	      if (parts[2] === '*' && parts[4] === '1-5' && sameDays(days, [1, 2, 3, 4, 5])) {
+	        return { mode: 'weekdays', time, days: [1, 2, 3, 4, 5], summary: 'Weekdays at ' + formatTime(hour, minute) + '.' };
+	      }
+	      if (parts[2] === '*' && days && days.length > 0) {
+	        return { mode: 'weekly', time, days, summary: 'Every ' + formatDays(days) + ' at ' + formatTime(hour, minute) + '.' };
+	      }
+	      const monthday = parseCronNumber(parts[2], 1, 31);
+	      if (monthday !== null && parts[4] === '*') {
+	        return { mode: 'monthly', time, monthday, days: [], summary: 'Monthly on day ' + monthday + ' at ' + formatTime(hour, minute) + '.' };
+	      }
+	      return { mode: 'custom', time, days: [], summary: 'Custom cron: ' + expression };
+	    }
+
+	    function describeCronExpression(expression) {
+	      return parseCronExpressionForBuilder(expression).summary;
+	    }
+
+	    function getScheduleTimeParts() {
+	      const raw = document.getElementById('cron-schedule-time').value || '06:00';
+	      const [hourRaw, minuteRaw] = raw.split(':');
+	      return {
+	        hour: clampNumber(hourRaw, 0, 23, 6),
+	        minute: clampNumber(minuteRaw, 0, 59, 0),
+	      };
+	    }
+
+	    function setCronWeekdays(days) {
+	      const set = new Set((days || []).map((day) => String(day)));
+	      document.querySelectorAll('.weekday-chip').forEach((button) => {
+	        button.classList.toggle('active', set.has(button.dataset.day));
+	      });
+	    }
+
+	    function getCronWeekdays() {
+	      return Array.from(document.querySelectorAll('.weekday-chip.active')).map((button) => Number(button.dataset.day));
+	    }
+
+	    function parseCronDays(field) {
+	      if (!field || field === '*') return null;
+	      if (field.includes('/')) return null;
+	      const out = new Set();
+	      for (const segment of field.split(',')) {
+	        if (!segment) return null;
+	        const [startRaw, endRaw] = segment.split('-');
+	        const start = parseCronDayNumber(startRaw);
+	        const end = endRaw === undefined ? start : parseCronDayNumber(endRaw);
+	        if (start === null || end === null) return null;
+	        if (start <= end) {
+	          for (let day = start; day <= end; day += 1) out.add(day === 7 ? 0 : day);
+	        } else {
+	          for (let day = start; day <= 6; day += 1) out.add(day);
+	          for (let day = 0; day <= end; day += 1) out.add(day);
+	        }
+	      }
+	      const order = [1, 2, 3, 4, 5, 6, 0];
+	      return order.filter((day) => out.has(day));
+	    }
+
+	    function parseCronNumber(value, min, max) {
+	      if (!/^\\d+$/.test(String(value || ''))) return null;
+	      const number = Number(value);
+	      return number >= min && number <= max ? number : null;
+	    }
+
+	    function parseCronDayNumber(value) {
+	      const number = parseCronNumber(value, 0, 7);
+	      return number === 7 ? 0 : number;
+	    }
+
+	    function sameDays(a, b) {
+	      return Array.isArray(a) && a.length === b.length && a.every((day, index) => day === b[index]);
+	    }
+
+	    function formatDays(days) {
+	      const labels = (days || []).map((day) => cronDayNames[day]).filter(Boolean);
+	      if (labels.length === 1) return labels[0];
+	      if (labels.length === 2) return labels.join(' and ');
+	      return labels.slice(0, -1).join(', ') + ', and ' + labels[labels.length - 1];
+	    }
+
+	    function formatTime(hour, minute) {
+	      const suffix = hour >= 12 ? 'PM' : 'AM';
+	      const displayHour = hour % 12 || 12;
+	      return displayHour + ':' + pad2(minute) + ' ' + suffix;
+	    }
+
+	    function pad2(value) {
+	      return String(value).padStart(2, '0');
+	    }
+
+	    function clampNumber(value, min, max, fallback) {
+	      const number = Number(value);
+	      if (!Number.isFinite(number)) return fallback;
+	      return Math.max(min, Math.min(max, Math.trunc(number)));
+	    }
+
+	    async function loadCodex() {
       const [cfg, status] = await Promise.all([
         fetch('/api/codex/config').then((r) => r.json()),
         fetch('/api/codex/status').then((r) => r.json()),
@@ -1667,6 +1870,23 @@ export function renderManagementHtml() {
 
 	    document.getElementById('cron-refresh').addEventListener('click', loadCron);
 	    document.getElementById('cron-cancel-btn').addEventListener('click', resetCronJobForm);
+	    document.getElementById('cron-expression').addEventListener('input', syncScheduleBuilderFromExpression);
+	    document.getElementById('cron-schedule-mode').addEventListener('change', () => {
+	      const mode = document.getElementById('cron-schedule-mode').value;
+	      if (mode === 'weekly' && (getCronWeekdays().length === 0 || sameDays(getCronWeekdays(), [1, 2, 3, 4, 5]))) setCronWeekdays([1]);
+	      if (mode === 'weekdays') setCronWeekdays([1, 2, 3, 4, 5]);
+	      applyScheduleBuilderToExpression();
+	    });
+	    document.getElementById('cron-schedule-time').addEventListener('input', applyScheduleBuilderToExpression);
+	    document.getElementById('cron-monthday').addEventListener('input', applyScheduleBuilderToExpression);
+	    document.querySelectorAll('.weekday-chip').forEach((button) => {
+	      button.addEventListener('click', () => {
+	        document.getElementById('cron-schedule-mode').value = 'weekly';
+	        button.classList.toggle('active');
+	        if (getCronWeekdays().length === 0) button.classList.add('active');
+	        applyScheduleBuilderToExpression();
+	      });
+	    });
 
 	    document.getElementById('cron-config-form').addEventListener('submit', async (e) => {
 	      e.preventDefault();

@@ -1,6 +1,6 @@
-# WhatsApp API Gateway
+# WhatsApp Agent API
 
-A general-purpose WhatsApp API for agents. Connects to WhatsApp via Baileys and exposes a REST API — search contacts and groups by name to get their IDs, send messages (with attachments), read recent messages, and register webhooks that fire when messages arrive.
+A general-purpose WhatsApp API gateway for agents. Connects to WhatsApp via Baileys and exposes a REST API — search contacts and groups by name to get their IDs, send messages with attachments, read recent messages, register webhooks, route WhatsApp messages to Codex, and run scheduled agent workflows.
 
 ## What it does
 
@@ -15,7 +15,7 @@ A general-purpose WhatsApp API for agents. Connects to WhatsApp via Baileys and 
 ## Run
 
 ```bash
-cd whatsapp-api-gateway
+cd whatsapp-agent-api
 npm install
 npm start
 ```
@@ -162,3 +162,7 @@ whatsappAPI --rescan
 - `wa-qr.png` is generated for easy scanning.
 - Set `WA_OPEN_DOCS=0` to disable auto-opening the docs page on start.
 - Recent messages are buffered in memory per chat (last 200) for the read endpoint.
+
+## License
+
+This project is open source under the [MIT License](./LICENSE).
