@@ -642,3 +642,58 @@ Filenames are safe strings matching `[a-zA-Z0-9_.-]+`. Links appear in message o
 
 Always use the full JID (including `@` suffix) when calling send or read endpoints.
 When embedding a JID in a URL path, encode `@` as `%40`.
+
+
+## Multiple accounts
+
+`GET /api/accounts` lists the default and any secondary WhatsApp accounts.
+`POST /api/accounts` with `{"id":"work"}` creates an isolated secondary session
+and begins QR linking. Poll `GET /api/status?accountId=work`; when `qrAvailable`
+is true, fetch the PNG from `GET /api/qr?accountId=work` and scan it with the
+second phone. Account IDs are lowercase letters, digits, and hyphens (1-32
+characters). Sessions persist across gateway restarts.
+
+All existing status, QR, group, contact, chat, and message endpoints use the
+original account by default. Add `?accountId=work` to target another account.
+Unknown account IDs return 404. Webhooks, Codex rules, and WhatsApp cron steps
+accept an `accountId` field, defaulting to `default`. Incoming webhook payloads
+include `message.accountId`; Codex workspaces are separated by account.
+
+`POST /api/accounts/{id}/relink` clears only that account's session and starts
+a new QR link while the gateway stays running. It also works with `id=default`.
+Poll `GET /api/status?accountId=<id>` and fetch the QR from `/api/qr` with the
+same account ID.
+An explicit WhatsApp logout automatically starts a fresh QR link; transient
+connection failures keep their existing reconnect behavior.
+
+## Group management
+
+The Baileys gateway supports creating groups, listing members, and adding participants.
+
+List current members: `GET /api/groups/{groupId}/participants`. This fetches current
+membership from WhatsApp (rather than the cached group directory).
+```json
+{"groupId":"120363204563219847@g.us","participants":[{"id":"14155550123@s.whatsapp.net","admin":"admin"},{"id":"14155550124@s.whatsapp.net","admin":null}]}
+```
+Participant IDs may use WhatsApp LIDs. Admin roles and other fields depend on the
+metadata returned by WhatsApp.
+
+Create a group: `POST /api/groups`
+```json
+{"subject":"Operations Team","participants":["14155550123","14155550124"]}
+```
+Returns HTTP 201 with Baileys group metadata (including `id`, `subject`, and `participants`).
+Check returned membership; creation does not guarantee all requested people joined.
+
+Add members: `POST /api/groups/{groupId}/participants`, using the group ID returned above.
+```json
+{"participants":["14155550125"]}
+```
+Returns HTTP 200 with `{"groupId":"...@g.us","participants":[{"jid":"...","status":"200","content":{}}]}`.
+Each participant has their own WhatsApp status; HTTP 200 alone does not mean everyone was added.
+WhatsApp group permissions and participant privacy settings apply.
+
+Participants must be a non-empty array of international phone-number strings or individual
+JIDs ending in `@s.whatsapp.net` or `@lid`. Phone numbers are checked against WhatsApp;
+duplicate resolved JIDs are removed. Subject must contain 1–100 characters.
+Invalid inputs return 400; disconnected WhatsApp returns 503; upstream operation failures return 500.

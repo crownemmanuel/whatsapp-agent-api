@@ -14,15 +14,18 @@ const LOG = pino({ name: "whatsapp-api-gateway", level: process.env.LOG_LEVEL ||
 const MAX_BUFFERED_PER_CHAT = 200
 
 export class WhatsAppBridge {
-  constructor({ sessionDir, mediaDir, qrPath, onMessage, onConnectionChange }) {
+  constructor({ sessionDir, mediaDir, qrPath, accountId = "default", onMessage, onConnectionChange, onSessionExpired }) {
     this.sessionDir = sessionDir
     this.mediaDir = mediaDir
     this.qrPath = qrPath
+    this.accountId = accountId
     this.onMessage = onMessage
     this.onConnectionChange = onConnectionChange
+    this.onSessionExpired = onSessionExpired
     this.sock = null
     this.connecting = null
     this.isReady = false
+    this.reconnecting = false
     this.readyWaiters = []
     this.shouldReconnect = true
     this.lastQr = ""
@@ -53,6 +56,7 @@ export class WhatsAppBridge {
   async stop() {
     this.shouldReconnect = false
     this.isReady = false
+    this.reconnecting = false
     this.resolveWaiters(new Error("WhatsApp bridge stopped"))
     if (this.onConnectionChange) this.onConnectionChange(false)
     if (this.sock) {
@@ -101,7 +105,9 @@ export class WhatsAppBridge {
 
       if (update.connection === "open") {
         this.isReady = true
+        this.reconnecting = false
         this.lastQr = ""
+        if (this.qrPath) void this.removeQrFile()
         this.me = sock.user || null
         this.resolveWaiters()
         if (this.onConnectionChange) this.onConnectionChange(true)
@@ -115,13 +121,20 @@ export class WhatsAppBridge {
       const statusCode = update?.lastDisconnect?.error?.output?.statusCode
       const loggedOut = statusCode === DisconnectReason.loggedOut
       this.isReady = false
+      this.reconnecting = this.shouldReconnect && !loggedOut
       this.resolveWaiters(new Error("WhatsApp connection closed"))
       if (this.onConnectionChange) this.onConnectionChange(false)
       LOG.warn({ statusCode, loggedOut }, "WhatsApp connection closed")
 
+      if (loggedOut && this.shouldReconnect && this.onSessionExpired) {
+        void this.onSessionExpired()
+      }
+
       if (!this.shouldReconnect || loggedOut) {
         if (loggedOut) {
-          console.error("WhatsApp session logged out. Re-link with: npm start -- --rescan")
+          console.error(this.onSessionExpired
+            ? "WhatsApp session logged out. Starting a fresh QR link."
+            : "WhatsApp session logged out. Re-link with: npm start -- --rescan")
         }
         return
       }
@@ -139,6 +152,15 @@ export class WhatsAppBridge {
       LOG.warn({ err }, "Failed to write QR png")
     }
     await printTerminalQr(qr)
+  }
+
+  async removeQrFile() {
+    if (!this.qrPath) return
+    try {
+      await fs.unlink(this.qrPath)
+    } catch (err) {
+      if (err?.code !== "ENOENT") LOG.warn({ err }, "Failed to remove QR png")
+    }
   }
 
   // ---- Directory ingestion --------------------------------------------------
@@ -225,6 +247,59 @@ export class WhatsAppBridge {
     return list.slice(-limit)
   }
 
+  // ---- Group management -----------------------------------------------------
+
+  async resolveGroupParticipants(participants) {
+    if (!Array.isArray(participants) || participants.length === 0) {
+      throw badRequest("`participants` must be a non-empty array")
+    }
+    // Validate the entire request before making any WhatsApp calls.
+    const values = participants.map((value) => {
+      if (typeof value !== "string") throw badRequest("Participants must be strings")
+      const trimmed = value.trim()
+      if (!/^(?:[0-9]+@(?:s\.whatsapp\.net|lid)|\+?[0-9][0-9 ()-]*)$/.test(trimmed)) {
+        throw badRequest("Participants must be international phone numbers or individual WhatsApp JIDs")
+      }
+      return trimmed
+    })
+    const jids = []
+    for (const value of values) jids.push(await this.resolveJid(value))
+    return [...new Set(jids)]
+  }
+
+  async createGroup(subject, participants) {
+    this.assertReady()
+    if (typeof subject !== "string" || !subject.trim() || Array.from(subject.trim()).length > 100) {
+      throw badRequest("`subject` must contain 1–100 characters")
+    }
+    const jids = await this.resolveGroupParticipants(participants)
+    const group = await this.sock.groupCreate(subject.trim(), jids)
+    this.ingestGroups([group])
+    return group
+  }
+
+  async addGroupParticipants(groupId, participants) {
+    this.assertReady()
+    if (typeof groupId !== "string" || !/^[0-9]+(?:-[0-9]+)?@g\.us$/.test(groupId)) {
+      throw badRequest("`groupId` must be a group JID ending in @g.us")
+    }
+    const jids = await this.resolveGroupParticipants(participants)
+    const results = await this.sock.groupParticipantsUpdate(groupId, jids, "add")
+    // Never turn a successful mutation into a failure if the directory refresh fails.
+    await this.refreshGroups()
+    return { groupId, participants: results }
+  }
+
+  async getGroupParticipants(groupId) {
+    this.assertReady()
+    if (typeof groupId !== "string" || !/^[0-9]+(?:-[0-9]+)?@g\.us$/.test(groupId)) {
+      throw badRequest("`groupId` must be a group JID ending in @g.us")
+    }
+    const group = await this.sock.groupMetadata(groupId)
+    this.ingestGroups([group])
+    return { groupId, participants: group.participants }
+  }
+
   // ---- Sending --------------------------------------------------------------
 
   /**
@@ -263,12 +338,13 @@ export class WhatsAppBridge {
     return { id: sent?.key?.id, to: jid }
   }
 
-  async sendMedia(to, { type, buffer, caption, mimetype, filename, ptt }) {
+  async sendMedia(to, { type, buffer, caption, mentions, mimetype, filename, ptt }) {
     this.assertReady()
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
       throw badRequest("media content is required (mediaUrl or mediaBase64)")
     }
     const jid = await this.resolveJid(to)
+    const mentionedJid = this.normalizeMentionJids(mentions)
 
     let content
     switch (type) {
@@ -293,9 +369,28 @@ export class WhatsAppBridge {
         throw badRequest("`type` must be one of: image, video, audio, document")
     }
 
+    if (mentionedJid.length && (type === "image" || type === "video" || type === "document")) {
+      content.mentions = mentionedJid
+      content.contextInfo = { mentionedJid }
+    }
+
     const sent = await this.sock.sendMessage(jid, content)
     this.trackOutboundMessage(sent?.key?.id)
     return { id: sent?.key?.id, to: jid }
+  }
+
+  normalizeMentionJids(mentions) {
+    if (!Array.isArray(mentions)) return []
+
+    return mentions
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((value) => {
+        if (value.endsWith("@s.whatsapp.net") || value.endsWith("@lid")) return value
+        const digits = value.replace(/\D/g, "")
+        return digits ? `${digits}@s.whatsapp.net` : ""
+      })
+      .filter(Boolean)
   }
 
   trackOutboundMessage(id) {
@@ -414,7 +509,8 @@ export class WhatsAppBridge {
         const filename = safeId + ext
         await fs.mkdir(this.mediaDir, { recursive: true })
         await fs.writeFile(path.join(this.mediaDir, filename), buf)
-        row.mediaUrl = "/api/media/" + encodeURIComponent(filename)
+        row.mediaUrl = "/api/media/" + encodeURIComponent(filename) +
+          (this.accountId === "default" ? "" : "?accountId=" + encodeURIComponent(this.accountId))
       } catch (err) {
         LOG.warn({ err }, "Failed to download incoming media")
       }
@@ -527,9 +623,35 @@ function getMentionedJids(contextInfo) {
   return Array.isArray(mentioned) ? mentioned.map((jid) => String(jid || "").trim()).filter(Boolean) : []
 }
 
-function mediaExtension(mediaType, mimetype) {
-  const fromMime = String(mimetype || "").split("/")[1]?.split(";")[0]
-  if (fromMime) return "." + fromMime.replace("jpeg", "jpg")
+export function mediaExtension(mediaType, mimetype) {
+  const cleanMime = String(mimetype || "").split(";")[0].trim().toLowerCase()
+  const mapped = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/wav": ".wav",
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
+    "application/json": ".json",
+    "application/zip": ".zip",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-powerpoint": ".ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+  }[cleanMime]
+  if (mapped) return mapped
+  const fromMime = cleanMime.split("/")[1]
+  if (fromMime) return "." + fromMime.replace("jpeg", "jpg").replace(/[^a-z0-9]+/g, "-")
   if (mediaType === "image") return ".jpg"
   if (mediaType === "video") return ".mp4"
   if (mediaType === "audio") return ".ogg"

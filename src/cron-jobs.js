@@ -135,6 +135,7 @@ export class CronJobScheduler {
     config,
     rootDir,
     bridge = null,
+    getBridge = null,
     env = process.env,
     fetchImpl = globalThis.fetch,
     codexRunner = null,
@@ -145,6 +146,7 @@ export class CronJobScheduler {
     this.config = normalizeCronJobsConfig(config)
     this.rootDir = rootDir
     this.bridge = bridge
+    this.getBridge = getBridge
     this.env = env
     this.fetchImpl = fetchImpl
     this.codexRunner = codexRunner
@@ -514,17 +516,18 @@ export class CronJobScheduler {
     const caption = resolveTemplate(step.caption, context)
     const preview = job.previewOnly === true || step.previewOnly === true
     if (preview) return { preview: true, to, text, mediaPath, caption }
-    if (!this.bridge) throw new Error("WhatsApp bridge is not available")
+    const bridge = this.getBridge ? this.getBridge(step.accountId || "default") : this.bridge
+    if (!bridge) throw new Error("WhatsApp bridge is not available")
 
     const sent = []
-    if (text) sent.push({ kind: "text", ...(await this.bridge.sendText(to, text)) })
+    if (text) sent.push({ kind: "text", ...(await bridge.sendText(to, text)) })
     if (mediaPath) {
       const filePath = resolveWorkspaceFile(workspace.workspaceDir, mediaPath)
       const buffer = await fs.readFile(filePath)
       const [type, mimetype] = mediaKind(filePath, step.mediaType)
       sent.push({
         kind: "media",
-        ...(await this.bridge.sendMedia(to, {
+        ...(await bridge.sendMedia(to, {
           type,
           buffer,
           caption: caption || undefined,
@@ -790,6 +793,7 @@ function normalizeStep(input, index) {
   }
   if (type === "whatsapp") {
     step.to = cleanString(input.to)
+    step.accountId = cleanString(input.accountId) || "default"
     step.mediaType = cleanString(input.mediaType)
   }
   return step

@@ -76,6 +76,21 @@ test("redacts env secrets in nested outputs", () => {
   })
 })
 
+test("WhatsApp steps send through the selected account", async () => {
+  const calls = []
+  const scheduler = new CronJobScheduler({
+    config: defaultCronJobsConfig(),
+    getBridge: (accountId) => {
+      calls.push(["select", accountId])
+      return { sendText: async (to, text) => ({ to, text, accountId }) }
+    },
+  })
+  const step = { type: "whatsapp", accountId: "work", to: "123@s.whatsapp.net", text: "hello" }
+  const result = await scheduler.runWhatsAppStep(step, { previewOnly: false }, {}, {})
+  assert.deepEqual(calls, [["select", "work"]])
+  assert.equal(result.sent[0].accountId, "work")
+})
+
 test("runs HTTP, transform, Codex artifact, and preview WhatsApp steps", async () => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "cron-jobs-test-"))
   const config = normalizeCronJobsConfig({

@@ -47,6 +47,10 @@ export function getSessionDir() {
   return path.join(ROOT, "baileys-auth")
 }
 
+export function getAccountsRoot() {
+  return path.join(DATA_DIR, "accounts")
+}
+
 export function getMediaDir() {
   return path.join(DATA_DIR, "media")
 }
@@ -87,6 +91,7 @@ export function normalizeWebhook(input) {
 
   return {
     id: String(input.id || "").trim() || randomUUID(),
+    accountId: String(input.accountId || "default").trim() || "default",
     url,
     chatId: chatId || null,
     events: events.length ? events : ["message"],

@@ -24,6 +24,12 @@ const ATTACHMENT_KINDS = {
   ".opus": ["audio", "audio/ogg; codecs=opus"],
   ".wav": ["audio", "audio/wav"],
   ".pdf": ["document", "application/pdf"],
+  ".doc": ["document", "application/msword"],
+  ".docx": ["document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ".xls": ["document", "application/vnd.ms-excel"],
+  ".xlsx": ["document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ".ppt": ["document", "application/vnd.ms-powerpoint"],
+  ".pptx": ["document", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   ".txt": ["document", "text/plain"],
   ".csv": ["document", "text/csv"],
   ".json": ["document", "application/json"],
@@ -82,12 +88,14 @@ export function normalizeCodexRule(input) {
   const name = cleanString(input.name) || "Codex rule"
   return {
     id: cleanString(input.id) || randomId(),
+    accountId: cleanString(input.accountId) || "default",
     name,
     enabled: input.enabled !== false,
     chatType,
     chatId: normalizeNullableJid(input.chatId),
     allowedSenderIds: normalizeStringList(input.allowedSenderIds),
     keywords: normalizeStringList(input.keywords),
+    textPrefixes: normalizeStringList(input.textPrefixes),
     requireMention: input.requireMention === true,
     allowFromMe: input.allowFromMe === true,
     sandbox: normalizeCodexSandbox(input.sandbox || ""),
@@ -117,6 +125,7 @@ export function getMatchingRule(rules, message, currentUserJid) {
 
 export function matchesCodexRule(rule, message, currentUserJid) {
   if (!rule?.enabled || !message) return false
+  if ((rule.accountId || "default") !== (message.accountId || "default")) return false
   if (message.fromMe && !rule.allowFromMe) return false
 
   const isGroup = Boolean(message.isGroup)
@@ -135,9 +144,14 @@ export function matchesCodexRule(rule, message, currentUserJid) {
     if (!senderCandidates.some((candidate) => allowed.includes(candidate))) return false
   }
 
-  if (Array.isArray(rule.keywords) && rule.keywords.length > 0) {
+  const hasKeywords = Array.isArray(rule.keywords) && rule.keywords.length > 0
+  const hasTextPrefixes = Array.isArray(rule.textPrefixes) && rule.textPrefixes.length > 0
+  if (hasKeywords || hasTextPrefixes) {
     const text = cleanString(message.text).toLowerCase()
-    if (!rule.keywords.some((keyword) => text.includes(cleanString(keyword).toLowerCase()))) return false
+    const keywordMatch = hasKeywords && rule.keywords.some((keyword) => text.includes(cleanString(keyword).toLowerCase()))
+    const prefixMatch =
+      hasTextPrefixes && rule.textPrefixes.some((prefix) => text.startsWith(cleanString(prefix).toLowerCase()))
+    if (!keywordMatch && !prefixMatch) return false
   }
 
   if (rule.requireMention && !messageMentionsCurrentUser(message, currentUserJid)) return false
@@ -183,7 +197,12 @@ Directive lines are stripped before the rest of your response is sent as the tex
 - Text:
 ${message.text || "(No text. The message may contain media.)"}`,
   ]
-  if (message.mediaUrl) parts.push(`Incoming media URL on the gateway: ${message.mediaUrl}`)
+  if (message.mediaUrl) {
+    const mediaUrl = cleanString(message.mediaUrl)
+    const absoluteMediaUrl = mediaUrl.startsWith("http") ? mediaUrl : `http://localhost:3399${mediaUrl}`
+    parts.push(`Incoming media URL on the gateway: ${mediaUrl}`)
+    parts.push(`Incoming media download URL: ${absoluteMediaUrl}`)
+  }
   return parts.filter(Boolean).join("\n\n---\n\n")
 }
 
@@ -335,19 +354,37 @@ export class CodexAgentRouter {
   }
 
   async handleMessage(message) {
-    if (!this.config.enabled || !message) return null
+    if (!message) return null
+    if (!this.config.enabled) {
+      this.logger.info(routeLogFields(message), "Codex routing skipped: disabled")
+      return null
+    }
     if (message.fromMe && this.bridge?.isGatewayOutbound?.(message.id)) {
-      this.logger.debug({ chatId: message.chatId, id: message.id }, "Ignored gateway auto-reply echo")
+      this.logger.info(routeLogFields(message), "Codex routing skipped: gateway auto-reply echo")
       return null
     }
-    const currentUserJid = getBridgeUserJid(this.bridge)
-    const rule = getMatchingRule(this.config.rules, message, currentUserJid)
+    const currentUserJids = getBridgeUserJids(this.bridge)
+    const rule = getMatchingRule(this.config.rules, message, currentUserJids)
     if (!rule) {
-      if (message.fromMe) {
-        this.logger.debug({ chatId: message.chatId }, "No Codex rule allows messages from the linked account")
-      }
+      this.logger.info(
+        {
+          ...routeLogFields(message),
+          ruleCount: this.config.rules.length,
+          currentUserJids,
+        },
+        "Codex routing skipped: no matching rule",
+      )
       return null
     }
+    this.logger.info(
+      {
+        ...routeLogFields(message),
+        ruleId: rule.id,
+        ruleName: rule.name,
+        currentUserJids,
+      },
+      "Codex routing matched rule",
+    )
 
     const previous = this.chatQueues.get(message.chatId) || Promise.resolve()
     const run = previous
@@ -378,6 +415,15 @@ export class CodexAgentRouter {
       threadId: "",
     }
     this.rememberRun(runRecord)
+    this.logger.info(
+      {
+        runId: runRecord.id,
+        ruleId: rule.id,
+        ruleName: rule.name,
+        ...routeLogFields(message),
+      },
+      "Codex run queued",
+    )
 
     const typing = this.bridge?.createTypingSession?.(message.chatId) || null
 
@@ -406,6 +452,10 @@ export class CodexAgentRouter {
       const thread = threadState.threadId
         ? codex.resumeThread(threadState.threadId, threadOptions)
         : codex.startThread(threadOptions)
+      this.logger.info(
+        { runId: runRecord.id, ruleId: rule.id, chatId: message.chatId, workspaceDir: workspace.workspaceDir },
+        "Codex run started",
+      )
       const result = await thread.run(prompt)
       const response = cleanString(result.finalResponse) || "Codex completed the request."
       const { text: replyText, attachments } = extractMediaDirectives(response)
@@ -414,6 +464,17 @@ export class CodexAgentRouter {
       runRecord.response = response
       runRecord.attachments = attachments.map((attachment) => attachment.path)
       runRecord.ok = true
+      this.logger.info(
+        {
+          runId: runRecord.id,
+          ruleId: rule.id,
+          chatId: message.chatId,
+          threadId: runRecord.threadId,
+          attachmentCount: attachments.length,
+          responsePreview: previewText(response),
+        },
+        "Codex run completed",
+      )
       if (runRecord.threadId) {
         await writeThreadState(workspace.threadPath, {
           threadId: runRecord.threadId,
@@ -545,17 +606,27 @@ function normalizeNullableJid(value) {
   return text || null
 }
 
-function messageMentionsCurrentUser(message, currentUserJid) {
-  const current = normalizeBareJid(currentUserJid)
-  if (!current) return false
+function messageMentionsCurrentUser(message, currentUserJids) {
+  const current = normalizeStringList(Array.isArray(currentUserJids) ? currentUserJids : [currentUserJids])
+    .map(normalizeBareJid)
+    .filter(Boolean)
+  if (current.length === 0) return false
   const mentioned = Array.isArray(message.mentionedJids) ? message.mentionedJids : []
-  if (mentioned.some((jid) => normalizeBareJid(jid) === current)) return true
-  const number = digitsOnly(current)
-  return Boolean(number && cleanString(message.text).includes(`@${number}`))
+  const normalizedMentioned = mentioned.map(normalizeBareJid).filter(Boolean)
+  if (normalizedMentioned.some((jid) => current.includes(jid))) return true
+  const currentNumbers = current.map(digitsOnly).filter(Boolean)
+  const text = cleanString(message.text)
+  return currentNumbers.some((number) => text.includes(`@${number}`))
 }
 
-function getBridgeUserJid(bridge) {
-  return normalizeBareJid(bridge?.me?.id || bridge?.me?.jid || bridge?.me || "")
+function getBridgeUserJids(bridge) {
+  const me = bridge?.me
+  const candidates = []
+  if (typeof me === "string") candidates.push(me)
+  if (me && typeof me === "object") {
+    candidates.push(me.id, me.jid, me.lid)
+  }
+  return Array.from(new Set(candidates.map(normalizeBareJid).filter(Boolean)))
 }
 
 function normalizeBareJid(value) {
@@ -572,6 +643,26 @@ function digitsOnly(value) {
 
 function cleanString(value) {
   return String(value ?? "").trim()
+}
+
+function previewText(value, max = 160) {
+  const text = cleanString(value).replace(/\s+/g, " ")
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1)}…`
+}
+
+function routeLogFields(message) {
+  return {
+    messageId: message.id || "",
+    chatId: message.chatId || "",
+    chatName: message.chatName || "",
+    isGroup: Boolean(message.isGroup),
+    senderId: message.senderId || "",
+    sender: message.sender || "",
+    fromMe: Boolean(message.fromMe),
+    mentionedJids: Array.isArray(message.mentionedJids) ? message.mentionedJids : [],
+    textPreview: previewText(message.text || ""),
+  }
 }
 
 function randomId() {

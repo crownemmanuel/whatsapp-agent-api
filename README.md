@@ -166,3 +166,59 @@ whatsappAPI --rescan
 ## License
 
 This project is open source under the [MIT License](./LICENSE).
+
+
+## Multiple WhatsApp accounts
+
+The existing `baileys-auth/` session is the `default` account. Additional accounts
+keep separate sessions under `data/accounts/<id>/auth/` and use the same API server.
+In the management UI, use the account selector and **Add account** on the Link tab,
+then scan the displayed QR with that account's phone. The supervised gateway stays
+running; do not launch another gateway process for the second account.
+
+You can also create an account through the API:
+
+```bash
+curl -X POST http://localhost:3399/api/accounts -H 'Content-Type: application/json' -d '{"id":"work"}'
+curl 'http://localhost:3399/api/status?accountId=work'
+```
+
+Fetch `GET /api/qr?accountId=work` while `qrAvailable` is true. Use
+`GET /api/accounts` to list accounts. Existing API calls use `default`; add
+`?accountId=work` to status, QR, groups, contacts, chats, and message endpoints
+to use another account. Webhooks and Codex rules accept `accountId` in their
+JSON body, and WhatsApp cron steps accept `accountId`; each defaults to `default`.
+When an account disconnects, select it on the Link tab and click **Generate QR
+code**. The running gateway clears only that account's saved session and shows
+the new QR in the UI. The equivalent API call is
+`POST /api/accounts/{id}/relink`, including `id=default` for the original account.
+If WhatsApp explicitly logs a session out, the gateway starts a new QR link
+automatically; ordinary connection drops continue to reconnect without clearing
+credentials.
+
+## Group management
+
+The Baileys gateway supports creating groups and adding participants.
+
+Create a group: `POST /api/groups`
+```json
+{"subject":"Operations Team","participants":["14155550123","14155550124"]}
+```
+Returns HTTP 201 with Baileys group metadata (including `id`, `subject`, and `participants`).
+Check returned membership; creation does not guarantee all requested people joined.
+
+List members: `GET /api/groups/{groupId}/participants`, using the group ID returned above.
+Returns current WhatsApp membership as `{ "groupId": "...@g.us", "participants": [{ "id": "...", "admin": null }] }`.
+
+Add members: `POST /api/groups/{groupId}/participants`, using the group ID returned above.
+```json
+{"participants":["14155550125"]}
+```
+Returns HTTP 200 with `{"groupId":"...@g.us","participants":[{"jid":"...","status":"200","content":{}}]}`.
+Each participant has their own WhatsApp status; HTTP 200 alone does not mean everyone was added.
+WhatsApp group permissions and participant privacy settings apply.
+
+Participants must be a non-empty array of international phone-number strings or individual
+JIDs ending in `@s.whatsapp.net` or `@lid`. Phone numbers are checked against WhatsApp;
+duplicate resolved JIDs are removed. Subject must contain 1–100 characters.
+Invalid inputs return 400; disconnected WhatsApp returns 503; upstream operation failures return 500.

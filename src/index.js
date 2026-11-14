@@ -6,6 +6,7 @@ import {
   getCronJobsRoot,
   getQrPath,
   getSessionDir,
+  getAccountsRoot,
   loadConfig,
   normalizeWebhook,
   saveConfig,
@@ -22,6 +23,8 @@ import {
 } from "./codex-agent.js"
 import { CronJobScheduler } from "./cron-jobs.js"
 import { WhatsAppBridge, resetWhatsAppSession } from "./whatsapp.js"
+import { AccountRegistry } from "./accounts.js"
+import path from "node:path"
 
 const LOG = pino({ name: "whatsapp-api-gateway", level: process.env.LOG_LEVEL || "info" })
 
@@ -44,6 +47,7 @@ async function main() {
     add: async (input) => {
       const normalized = normalizeWebhook(input)
       if (!normalized) return null
+      accounts.get(normalized.accountId)
       config = await saveConfig({ ...config, webhooks: [...config.webhooks, normalized] })
       return config.webhooks.find((w) => w.id === normalized.id)
     },
@@ -55,27 +59,33 @@ async function main() {
     },
   }
 
-  let codexRouter = null
-  const bridge = new WhatsAppBridge({
-    sessionDir,
-    mediaDir,
-    qrPath,
-    onConnectionChange: (connected) => {
-      LOG.info({ connected }, "WhatsApp connection changed")
-    },
-    onMessage: (message) => {
-      dispatchWebhooks(config.webhooks, message)
-      if (codexRouter) {
-        void codexRouter.handleMessage(message)
-      }
-    },
-  })
-
-  codexRouter = new CodexAgentRouter({
-    config: config.codexAgent,
-    bridge,
-    workspaceRoot: resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot),
-  })
+  const routers = new Map()
+  const createBridge = (accountId, paths) => {
+    const bridge = new WhatsAppBridge({
+      mediaDir,
+      ...paths,
+      accountId,
+      onConnectionChange: (connected) => LOG.info({ accountId, connected }, "WhatsApp connection changed"),
+      onSessionExpired: () => accounts.relink(accountId).catch((err) =>
+        LOG.error({ accountId, err }, "Could not start a new WhatsApp link after logout")),
+      onMessage: (message) => {
+        const scopedMessage = { ...message, accountId }
+        dispatchWebhooks(config.webhooks, scopedMessage)
+        void routers.get(accountId)?.handleMessage(scopedMessage)
+      },
+    })
+    routers.set(accountId, new CodexAgentRouter({
+      config: config.codexAgent,
+      bridge,
+      workspaceRoot: accountId === "default"
+        ? resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot)
+        : path.join(resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot), "accounts", accountId),
+    }))
+    return bridge
+  }
+  const bridge = createBridge("default", { sessionDir, qrPath })
+  const accounts = new AccountRegistry({ rootDir: getAccountsRoot(), defaultBridge: bridge, defaultSessionDir: sessionDir, defaultQrPath: qrPath, defaultMediaDir: mediaDir, createBridge })
+  await accounts.load()
 
   const codexAgent = {
     get: () => config.codexAgent,
@@ -84,12 +94,13 @@ async function main() {
         ...config,
         codexAgent: normalizeCodexAgentConfig({ ...config.codexAgent, ...(input || {}) }),
       })
-      updateCodexRouter(codexRouter, config.codexAgent, defaultCodexWorkspaceRoot)
+      updateCodexRouters(routers, config.codexAgent, defaultCodexWorkspaceRoot)
       return config.codexAgent
     },
     addRule: async (input) => {
       const rule = normalizeCodexRule(input)
       if (!rule) return null
+      accounts.get(rule.accountId)
       config = await saveConfig({
         ...config,
         codexAgent: normalizeCodexAgentConfig({
@@ -97,13 +108,14 @@ async function main() {
           rules: [...config.codexAgent.rules, rule],
         }),
       })
-      updateCodexRouter(codexRouter, config.codexAgent, defaultCodexWorkspaceRoot)
+      updateCodexRouters(routers, config.codexAgent, defaultCodexWorkspaceRoot)
       return config.codexAgent.rules.find((item) => item.id === rule.id)
     },
     updateRule: async (id, input) => {
       const existing = config.codexAgent.rules.find((rule) => rule.id === id)
       if (!existing) return null
       const nextRule = normalizeCodexRule({ ...existing, ...(input || {}), id })
+      accounts.get(nextRule.accountId)
       config = await saveConfig({
         ...config,
         codexAgent: normalizeCodexAgentConfig({
@@ -111,7 +123,7 @@ async function main() {
           rules: config.codexAgent.rules.map((rule) => (rule.id === id ? nextRule : rule)),
         }),
       })
-      updateCodexRouter(codexRouter, config.codexAgent, defaultCodexWorkspaceRoot)
+      updateCodexRouters(routers, config.codexAgent, defaultCodexWorkspaceRoot)
       return config.codexAgent.rules.find((rule) => rule.id === id)
     },
     removeRule: async (id) => {
@@ -121,7 +133,7 @@ async function main() {
         ...config,
         codexAgent: normalizeCodexAgentConfig({ ...config.codexAgent, rules: next }),
       })
-      updateCodexRouter(codexRouter, config.codexAgent, defaultCodexWorkspaceRoot)
+      updateCodexRouters(routers, config.codexAgent, defaultCodexWorkspaceRoot)
       return true
     },
     status: async () => ({
@@ -129,18 +141,22 @@ async function main() {
       enabled: config.codexAgent.enabled,
       ruleCount: config.codexAgent.rules.length,
       workspaceRoot: resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot),
-      recentRuns: codexRouter.listRuns(),
+      recentRuns: Array.from(routers.entries()).flatMap(([accountId, router]) =>
+        router.listRuns().map((run) => ({ ...run, accountId }))),
     }),
-    readMemory: async ({ chatId, chatName, isGroup }) => {
+    readMemory: async ({ chatId, chatName, isGroup, accountId = "default" }) => {
+      accounts.get(accountId)
+      const root = routers.get(accountId).workspaceRoot
       const workspace = await ensureCodexWorkspace(
-        resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot),
+        root,
         { chatId, chatName, isGroup: Boolean(isGroup) },
       )
       return { workspaceName: workspace.workspaceName, workspaceDir: workspace.workspaceDir, text: await readCodexMemory(workspace.memoryPath) }
     },
-    writeMemory: async ({ chatId, chatName, isGroup, text }) => {
+    writeMemory: async ({ chatId, chatName, isGroup, text, accountId = "default" }) => {
+      accounts.get(accountId)
       const workspace = await ensureCodexWorkspace(
-        resolveCodexWorkspaceRoot(config.codexAgent, defaultCodexWorkspaceRoot),
+        routers.get(accountId).workspaceRoot,
         { chatId, chatName, isGroup: Boolean(isGroup) },
       )
       await writeCodexMemory(workspace.memoryPath, text)
@@ -152,6 +168,7 @@ async function main() {
     config: config.cronJobs,
     rootDir: cronJobsRoot,
     bridge,
+    getBridge: (accountId) => accounts.get(accountId).bridge,
     saveConfig: async (cronJobsConfig) => {
       config = await saveConfig({ ...config, cronJobs: cronJobsConfig })
       return config.cronJobs
@@ -180,7 +197,7 @@ async function main() {
     chat: async (input) => cronScheduler.chat(input),
   }
 
-  createApiServer({ port: config.apiPort, mediaDir, bridge, webhooks, codexAgent, cronJobs })
+  createApiServer({ port: config.apiPort, mediaDir, qrPath, bridge, accounts, webhooks, codexAgent, cronJobs })
   cronScheduler.start()
 
   if (config.openDocsOnStart) {
@@ -191,12 +208,12 @@ async function main() {
   console.log(`Management UI: http://localhost:${config.apiPort}/ui`)
   console.log(`Swagger docs: http://localhost:${config.apiPort}/docs`)
 
-  await bridge.start()
+  await accounts.startAll()
 
   const shutdown = async (signal) => {
     LOG.info({ signal }, "Shutting down")
     cronScheduler.stop()
-    await bridge.stop()
+    await accounts.stopAll()
     process.exit(0)
   }
 
@@ -204,9 +221,12 @@ async function main() {
   process.on("SIGTERM", () => void shutdown("SIGTERM"))
 }
 
-function updateCodexRouter(router, codexConfig, defaultCodexWorkspaceRoot) {
-  router.updateConfig(codexConfig)
-  router.workspaceRoot = resolveCodexWorkspaceRoot(codexConfig, defaultCodexWorkspaceRoot)
+function updateCodexRouters(routers, codexConfig, defaultCodexWorkspaceRoot) {
+  const root = resolveCodexWorkspaceRoot(codexConfig, defaultCodexWorkspaceRoot)
+  for (const [accountId, router] of routers) {
+    router.updateConfig(codexConfig)
+    router.workspaceRoot = accountId === "default" ? root : path.join(root, "accounts", accountId)
+  }
 }
 
 function resolveCodexWorkspaceRoot(codexConfig, fallback) {
@@ -218,6 +238,7 @@ function dispatchWebhooks(webhookList, message) {
 
   for (const hook of webhookList) {
     if (!hook.enabled) continue
+    if ((hook.accountId || "default") !== message.accountId) continue
     if (hook.chatId && hook.chatId !== message.chatId) continue
     if (Array.isArray(hook.events) && hook.events.length && !hook.events.includes("message")) continue
 

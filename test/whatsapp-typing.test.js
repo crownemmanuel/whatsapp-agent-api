@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { WhatsAppBridge } from "../src/whatsapp.js"
+import { mediaExtension, WhatsAppBridge } from "../src/whatsapp.js"
 
 function createBridge() {
   const calls = []
@@ -65,4 +65,13 @@ test("setTyping validates state and clamps durationMs", async () => {
   assert.equal(defaulted.durationMs, 30000)
 
   await bridge.setTyping("120363000@g.us", "paused")
+})
+
+test("mediaExtension maps Office document MIME types to usable extensions", () => {
+  assert.equal(
+    mediaExtension("document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ".docx",
+  )
+  assert.equal(mediaExtension("document", "application/msword"), ".doc")
+  assert.equal(mediaExtension("document", "application/pdf"), ".pdf")
 })

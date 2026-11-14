@@ -51,6 +51,23 @@ test("normalizes codex config with safe defaults and rule-level sandbox values",
   assert.deepEqual(config.rules[0].keywords, ["build", "deploy"])
 })
 
+test("matches text prefixes as a rule trigger", () => {
+  const rule = {
+    id: "prefix",
+    enabled: true,
+    chatType: "group",
+    chatId: "120363000@g.us",
+    allowedSenderIds: [],
+    keywords: [],
+    textPrefixes: ["steve"],
+    requireMention: false,
+    allowFromMe: true,
+  }
+
+  assert.equal(getMatchingRule([rule], { ...baseMessage, text: "Steve update the schedule" }, null), rule)
+  assert.equal(getMatchingRule([rule], { ...baseMessage, text: "hey Steve update the schedule" }, null), null)
+})
+
 test("matches a group rule by chat, sender, keyword, and mention", () => {
   const rule = {
     id: "rule-1",
@@ -63,6 +80,27 @@ test("matches a group rule by chat, sender, keyword, and mention", () => {
   }
 
   assert.equal(getMatchingRule([rule], baseMessage, "12025550123@s.whatsapp.net"), rule)
+})
+
+test("matches mentions by linked-account LID as well as phone JID", () => {
+  const rule = {
+    id: "lid-mention",
+    enabled: true,
+    chatType: "group",
+    chatId: "120363000@g.us",
+    allowedSenderIds: [],
+    keywords: [],
+    requireMention: true,
+  }
+
+  assert.equal(
+    getMatchingRule(
+      [rule],
+      { ...baseMessage, text: "@Steve please check this", mentionedJids: ["25448318763103:5@lid"] },
+      ["12024659419:5@s.whatsapp.net", "25448318763103:5@lid"],
+    ),
+    rule,
+  )
 })
 
 test("does not match outgoing messages or unmatched direct-message rules", () => {
@@ -151,6 +189,10 @@ test("detects attachment kinds from file extensions", () => {
   assert.deepEqual(detectAttachmentKind("clip.mp4"), { type: "video", mimetype: "video/mp4" })
   assert.deepEqual(detectAttachmentKind("note.mp3"), { type: "audio", mimetype: "audio/mpeg" })
   assert.deepEqual(detectAttachmentKind("report.pdf"), { type: "document", mimetype: "application/pdf" })
+  assert.deepEqual(detectAttachmentKind("prayers.docx"), {
+    type: "document",
+    mimetype: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  })
   assert.deepEqual(detectAttachmentKind("data.bin"), { type: "document", mimetype: "application/octet-stream" })
 })
 
@@ -172,6 +214,19 @@ test("prompt documents the media reply ability", () => {
 
   assert.match(prompt, /SEND_FILE: <path relative to the workspace>/)
   assert.match(prompt, /SEND_VOICE: <path to an audio file>/)
+})
+
+test("prompt includes an absolute incoming media download URL", () => {
+  const prompt = buildCodexPrompt({
+    config: defaultCodexAgentConfig(),
+    rule: {},
+    message: { ...baseMessage, mediaUrl: "/api/media/prayers.docx", text: "Prayer points.docx" },
+    workspaceDir: "/tmp/ops-workspace",
+    memoryText: "",
+  })
+
+  assert.match(prompt, /Incoming media URL on the gateway: \/api\/media\/prayers\.docx/)
+  assert.match(prompt, /Incoming media download URL: http:\/\/localhost:3399\/api\/media\/prayers\.docx/)
 })
 
 test("prompt includes WhatsApp metadata, memory, and artifact instructions", () => {

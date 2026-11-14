@@ -33,10 +33,10 @@ See [full API reference](references/API_REFERENCE.md) for all endpoints, paramet
 GET /api/status
 ```
 
-If `connected` is `false`, tell the user WhatsApp needs to be re-linked:
-```
-npm start -- --rescan
-```
+If `connected` is `false`, open the management UI Link tab to generate and scan
+a new QR code while the gateway keeps running. An agent can also call
+`POST /api/accounts/default/relink`, then poll `/api/status` and fetch `/api/qr`.
+For secondary accounts, use their ID in the relink path and `accountId` query.
 
 ---
 

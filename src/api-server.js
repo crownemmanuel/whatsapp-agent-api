@@ -3,14 +3,15 @@ import http from "node:http"
 import path from "node:path"
 import { buildOpenApiSpec, renderManagementHtml, renderSwaggerHtml } from "./openapi.js"
 
-const MEDIA_FILENAME_REG = /^[a-zA-Z0-9_.-]+\.(jpe?g|png|gif|webp|mp4|ogg|mp3|bin|pdf)$/
+const MEDIA_FILENAME_REG =
+  /^[a-zA-Z0-9_.-]+\.(jpe?g|png|gif|webp|mp4|mov|webm|ogg|opus|mp3|m4a|wav|bin|pdf|txt|csv|json|zip|docx?|xlsx?|pptx?|vnd\.openxmlformats-officedocument\.wordprocessingml\.document)$/
 
-export function createApiServer({ port, mediaDir, bridge, webhooks, codexAgent, cronJobs }) {
+export function createApiServer({ port, mediaDir, qrPath, bridge, accounts, webhooks, codexAgent, cronJobs }) {
   const openApiSpec = buildOpenApiSpec()
 
   const server = http.createServer(async (req, res) => {
     try {
-      await route(req, res, { mediaDir, bridge, webhooks, codexAgent, cronJobs, openApiSpec })
+      await route(req, res, { mediaDir, qrPath, bridge, accounts, webhooks, codexAgent, cronJobs, openApiSpec })
     } catch (error) {
       sendJson(res, error?.statusCode || 500, {
         error: error instanceof Error ? error.message : String(error),
@@ -30,7 +31,7 @@ export function createApiServer({ port, mediaDir, bridge, webhooks, codexAgent, 
     }
   })
 
-  return { close: () => server.close() }
+  return { close: () => server.close(), address: () => server.address() }
 }
 
 async function route(req, res, ctx) {
@@ -49,19 +50,71 @@ async function route(req, res, ctx) {
     return sendJson(res, 200, ctx.openApiSpec)
   }
 
+  if (method === "GET" && pathname === "/api/accounts") {
+    return sendJson(res, 200, ctx.accounts ? ctx.accounts.list() : [{ id: "default", connected: ctx.bridge.isReady, user: ctx.bridge.me || null }])
+  }
+  if (method === "POST" && pathname === "/api/accounts") {
+    if (!ctx.accounts) return sendJson(res, 503, { error: "Account management is unavailable" })
+    const body = await readJson(req)
+    return sendJson(res, 201, await ctx.accounts.add(body?.id))
+  }
+  const relinkMatch = pathname.match(/^\/api\/accounts\/([^/]+)\/relink$/)
+  if (method === "POST" && relinkMatch) {
+    if (!ctx.accounts) return sendJson(res, 503, { error: "Account management is unavailable" })
+    let id
+    try {
+      id = decodeURIComponent(relinkMatch[1])
+    } catch {
+      return sendJson(res, 400, { error: "Invalid account ID encoding" })
+    }
+    return sendJson(res, 200, await ctx.accounts.relink(id))
+  }
+
+  const accountId = url.searchParams.get("accountId") || "default"
+  if (ctx.accounts) {
+    const account = ctx.accounts.get(accountId)
+    ctx = { ...ctx, bridge: account.bridge, qrPath: account.qrPath, mediaDir: account.mediaDir }
+  } else if (accountId !== "default") {
+    return sendJson(res, 404, { error: `Unknown WhatsApp account: ${accountId}` })
+  }
+
   // ---- Status ---------------------------------------------------------------
   if (method === "GET" && pathname === "/api/status") {
+    const link = await getLinkStatus(ctx.qrPath, ctx.bridge)
     return sendJson(res, 200, {
+      accountId,
       connected: ctx.bridge.isReady,
       user: ctx.bridge.me || null,
       groupCount: ctx.bridge.groups.size,
       contactCount: ctx.bridge.contacts.size,
+      ...link,
     })
+  }
+  if (method === "GET" && pathname === "/api/qr") {
+    return serveQr(res, ctx.qrPath, ctx.bridge)
   }
 
   // ---- Directory ------------------------------------------------------------
   if (method === "GET" && pathname === "/api/groups") {
     return sendJson(res, 200, ctx.bridge.findGroups(url.searchParams.get("q"), parseLimit(url)))
+  }
+  if (method === "POST" && pathname === "/api/groups") {
+    const body = await readJson(req)
+    const result = await ctx.bridge.createGroup(body?.subject, body?.participants)
+    return sendJson(res, 201, result)
+  }
+  const participantsMatch = pathname.match(/^\/api\/groups\/([^/]+)\/participants$/)
+  if ((method === "GET" || method === "POST") && participantsMatch) {
+    let groupId
+    try {
+      groupId = decodeURIComponent(participantsMatch[1])
+    } catch {
+      return sendJson(res, 400, { error: "Invalid group ID encoding" })
+    }
+    const result = method === "GET"
+      ? await ctx.bridge.getGroupParticipants(groupId)
+      : await ctx.bridge.addGroupParticipants(groupId, (await readJson(req))?.participants)
+    return sendJson(res, 200, result)
   }
   if (method === "GET" && pathname === "/api/contacts") {
     return sendJson(res, 200, ctx.bridge.findContacts(url.searchParams.get("q"), parseLimit(url)))
@@ -100,6 +153,7 @@ async function route(req, res, ctx) {
       type: body.type,
       buffer,
       caption: body.caption,
+      mentions: body.mentions,
       mimetype: body.mimetype,
       filename: body.filename,
       ptt: body.ptt,
@@ -163,6 +217,7 @@ async function route(req, res, ctx) {
       res,
       200,
       await ctx.codexAgent.readMemory({
+        accountId,
         chatId,
         chatName: url.searchParams.get("chatName") || "",
         isGroup: url.searchParams.get("isGroup") === "true",
@@ -262,6 +317,49 @@ async function resolveMediaBuffer(body) {
   throw err
 }
 
+async function getLinkStatus(qrPath, bridge) {
+  const connected = bridge.isReady
+  const reconnecting = Boolean(bridge.reconnecting)
+  const awaitingLink = !connected && !!bridge.lastQr
+  let qrAvailable = false
+  let qrUpdatedAt = null
+  if (awaitingLink && qrPath) {
+    try {
+      const st = await fs.stat(qrPath)
+      if (st.isFile()) {
+        qrAvailable = true
+        qrUpdatedAt = Math.trunc(st.mtimeMs)
+      }
+    } catch (err) {
+      if (err?.code !== "ENOENT") throw err
+    }
+  }
+  return {
+    reconnecting,
+    awaitingLink,
+    qrAvailable,
+    qrUpdatedAt,
+    rescanCommand: "npm start -- --rescan",
+  }
+}
+
+async function serveQr(res, qrPath, bridge) {
+  if (!qrPath || bridge.isReady || !bridge.lastQr) {
+    return sendJson(res, 404, { error: "No QR code is available right now" })
+  }
+  try {
+    const buf = await fs.readFile(qrPath)
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Cache-Control": "no-cache",
+    })
+    res.end(buf)
+  } catch (err) {
+    if (err?.code === "ENOENT") return sendJson(res, 404, { error: "QR code file not found" })
+    return sendJson(res, 500, { error: "Error reading QR code" })
+  }
+}
+
 async function serveMedia(res, mediaDir, filename) {
   if (!mediaDir || !MEDIA_FILENAME_REG.test(filename) || filename.includes("..")) {
     return sendJson(res, 400, { error: "Bad request" })
@@ -277,6 +375,9 @@ async function serveMedia(res, mediaDir, filename) {
 }
 
 function contentTypeFor(filename) {
+  if (filename.endsWith(".vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }
   const ext = path.extname(filename).toLowerCase()
   return (
     {
@@ -286,9 +387,24 @@ function contentTypeFor(filename) {
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
       ".mp4": "video/mp4",
+      ".mov": "video/quicktime",
+      ".webm": "video/webm",
       ".ogg": "audio/ogg",
+      ".opus": "audio/ogg; codecs=opus",
       ".mp3": "audio/mpeg",
+      ".m4a": "audio/mp4",
+      ".wav": "audio/wav",
       ".pdf": "application/pdf",
+      ".txt": "text/plain",
+      ".csv": "text/csv",
+      ".json": "application/json",
+      ".zip": "application/zip",
+      ".doc": "application/msword",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xls": "application/vnd.ms-excel",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".ppt": "application/vnd.ms-powerpoint",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     }[ext] || "application/octet-stream"
   )
 }

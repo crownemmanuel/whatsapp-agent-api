@@ -1,5 +1,5 @@
 export function buildOpenApiSpec() {
-  return {
+  const spec = {
     openapi: "3.0.3",
     info: {
       title: "WhatsApp API Gateway",
@@ -17,6 +17,28 @@ export function buildOpenApiSpec() {
 	      { name: "Cron", description: "Run scheduled gateway jobs and Codex-driven automations" },
 	    ],
     paths: {
+      "/api/accounts": {
+        get: {
+          tags: ["Status"],
+          summary: "List linked and pending WhatsApp accounts",
+          responses: { 200: jsonArrayResponse("Accounts", "Account") },
+        },
+        post: {
+          tags: ["Status"],
+          summary: "Add a WhatsApp account and start QR linking",
+          description: "Creates an isolated session. Poll /api/status?accountId=<id> and fetch /api/qr?accountId=<id> to link it.",
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["id"], properties: { id: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,31}$" } } } } } },
+          responses: { 201: jsonResponse("Created account", "Account"), 400: jsonResponse("Invalid account ID", "Error"), 409: jsonResponse("Account already exists", "Error") },
+        },
+      },
+      "/api/accounts/{id}/relink": {
+        post: {
+          tags: ["Status"],
+          summary: "Clear and relink an account without stopping the gateway",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { 200: jsonResponse("Account awaiting a new QR scan", "Account"), 404: jsonResponse("Unknown account", "Error"), 409: jsonResponse("Relink already in progress", "Error") },
+        },
+      },
       "/api/status": {
         get: {
           tags: ["Status"],
@@ -24,7 +46,31 @@ export function buildOpenApiSpec() {
           responses: { 200: jsonResponse("Current status", "Status") },
         },
       },
+      "/api/qr": {
+        get: {
+          tags: ["Status"],
+          summary: "Current WhatsApp link QR code",
+          description:
+            "Returns the saved QR PNG while the gateway is waiting for you to scan and link WhatsApp. Returns 404 once linked or when no QR is active.",
+          responses: {
+            200: { description: "QR code PNG", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
+            404: jsonResponse("No QR available", "Error"),
+          },
+        },
+      },
       "/api/groups": {
+        post: {
+          tags: ["Directory"],
+          summary: "Create a WhatsApp group",
+          description: "Returns Baileys group metadata. Inspect returned participants; creation does not guarantee every requested person joined.",
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateGroup" } } } },
+          responses: {
+            201: jsonResponse("Created group metadata", "GroupMetadata"),
+            400: jsonResponse("Invalid request", "Error"),
+            503: jsonResponse("WhatsApp disconnected", "Error"),
+            500: jsonResponse("WhatsApp operation failed", "Error"),
+          },
+        },
         get: {
           tags: ["Directory"],
           summary: "Search groups by name",
@@ -32,6 +78,33 @@ export function buildOpenApiSpec() {
             "Returns groups you participate in. Use `q` to filter by name, then use the returned `id` to send or read messages.",
           parameters: [queryParam("q", "Filter by group name (substring match)"), limitParam()],
           responses: { 200: jsonArrayResponse("Matching groups", "Group") },
+        },
+      },
+      "/api/groups/{groupId}/participants": {
+        get: {
+          tags: ["Directory"],
+          summary: "List current group participants",
+          description: "Fetches current membership from WhatsApp. Participant objects include IDs and admin roles when provided by WhatsApp.",
+          parameters: [{ name: "groupId", in: "path", required: true, schema: { type: "string" }, description: "Group JID ending in @g.us" }],
+          responses: {
+            200: jsonResponse("Current group participants", "GroupMembersResult"),
+            400: jsonResponse("Invalid group ID", "Error"),
+            503: jsonResponse("WhatsApp disconnected", "Error"),
+            500: jsonResponse("WhatsApp operation failed", "Error"),
+          },
+        },
+        post: {
+          tags: ["Directory"],
+          summary: "Add participants to a group",
+          description: "WhatsApp permissions and participant privacy settings apply. HTTP 200 means the request was processed; inspect each participant status (200 is success).",
+          parameters: [{ name: "groupId", in: "path", required: true, schema: { type: "string" }, description: "Group JID ending in @g.us" }],
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/GroupParticipantsInput" } } } },
+          responses: {
+            200: jsonResponse("Per-participant results", "GroupParticipantsResult"),
+            400: jsonResponse("Invalid request", "Error"),
+            503: jsonResponse("WhatsApp disconnected", "Error"),
+            500: jsonResponse("WhatsApp operation failed", "Error"),
+          },
         },
       },
       "/api/contacts": {
@@ -155,6 +228,14 @@ export function buildOpenApiSpec() {
             200: jsonResponse("Message sent", "SendResult"),
             400: jsonResponse("Invalid request", "Error"),
           },
+        },
+      },
+      "/api/media/{filename}": {
+        get: {
+          tags: ["Messages"],
+          summary: "Download received media",
+          parameters: [{ name: "filename", in: "path", required: true, schema: { type: "string" } }],
+          responses: { 200: { description: "Media file", content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } }, 404: jsonResponse("Not found", "Error") },
         },
       },
       "/api/webhooks": {
@@ -361,10 +442,86 @@ export function buildOpenApiSpec() {
         Status: {
           type: "object",
           properties: {
+            accountId: { type: "string" },
             connected: { type: "boolean" },
+            reconnecting: { type: "boolean", description: "A temporary disconnect is being retried with the current session" },
             user: { type: "object", nullable: true },
             groupCount: { type: "integer" },
             contactCount: { type: "integer" },
+            awaitingLink: {
+              type: "boolean",
+              description: "True when WhatsApp is disconnected and a QR code is active",
+            },
+            qrAvailable: {
+              type: "boolean",
+              description: "True when the saved QR PNG can be loaded from /api/qr",
+            },
+            qrUpdatedAt: {
+              type: "integer",
+              nullable: true,
+              description: "Unix epoch milliseconds when the saved QR PNG was last updated",
+            },
+            rescanCommand: {
+              type: "string",
+              description: "Legacy foreground relink command; the running gateway also supports POST /api/accounts/{id}/relink",
+            },
+          },
+        },
+        Error: {
+          type: "object",
+          properties: { error: { type: "string" } },
+        },
+        GroupParticipantsInput: {
+          type: "object",
+          required: ["participants"],
+          properties: { participants: { type: "array", minItems: 1, items: { type: "string" }, description: "International phone numbers or individual JIDs (@s.whatsapp.net or @lid). Duplicates are removed.", example: ["14155550123"] } },
+        },
+        CreateGroup: {
+          allOf: [
+            { $ref: "#/components/schemas/GroupParticipantsInput" },
+            { type: "object", required: ["subject"], properties: { subject: { type: "string", minLength: 1, maxLength: 100, example: "Operations Team" } } },
+          ],
+        },
+        GroupMetadata: {
+          type: "object",
+          additionalProperties: true,
+          properties: { id: { type: "string" }, subject: { type: "string" }, participants: { type: "array", items: { type: "object", additionalProperties: true } } },
+        },
+        GroupParticipantsResult: {
+          type: "object",
+          properties: {
+            groupId: { type: "string" },
+            participants: { type: "array", items: { type: "object", properties: { jid: { type: "string" }, status: { type: "string", description: "WhatsApp status; 200 means success" }, content: { type: "object", additionalProperties: true } } } },
+          },
+        },
+        GroupMembersResult: {
+          type: "object",
+          required: ["groupId", "participants"],
+          properties: {
+            groupId: { type: "string" },
+            participants: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["id"],
+                additionalProperties: true,
+                properties: {
+                  id: { type: "string", description: "Participant WhatsApp JID" },
+                  admin: { type: "string", nullable: true, description: "Admin role, if any" },
+                },
+              },
+            },
+          },
+        },
+        Account: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            connected: { type: "boolean" },
+            reconnecting: { type: "boolean" },
+            user: { type: "object", nullable: true, additionalProperties: true },
+            awaitingLink: { type: "boolean" },
+            groupCount: { type: "integer" },
           },
         },
         Group: {
@@ -421,6 +578,11 @@ export function buildOpenApiSpec() {
             mediaUrl: { type: "string", description: "URL to download (alternative to mediaBase64)" },
             mediaBase64: { type: "string", description: "Base64-encoded media (alternative to mediaUrl)" },
             caption: { type: "string" },
+            mentions: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional contact JIDs or phone numbers to mention in image/video/document captions",
+            },
             filename: { type: "string", description: "Used for document type" },
             mimetype: { type: "string" },
             ptt: { type: "boolean", description: "For audio: send as a voice note" },
@@ -459,6 +621,7 @@ export function buildOpenApiSpec() {
           type: "object",
           properties: {
             id: { type: "string" },
+            accountId: { type: "string", default: "default" },
             url: { type: "string" },
             chatId: { type: "string", nullable: true },
             events: { type: "array", items: { type: "string" } },
@@ -472,6 +635,7 @@ export function buildOpenApiSpec() {
           required: ["url"],
           properties: {
             url: { type: "string", description: "Endpoint to POST message events to" },
+            accountId: { type: "string", default: "default", description: "Only messages received by this account trigger the webhook" },
             chatId: { type: "string", description: "Optional group/contact JID to scope the webhook" },
             secret: { type: "string", description: "Sent back as the X-Webhook-Secret header" },
             events: { type: "array", items: { type: "string" }, default: ["message"] },
@@ -512,12 +676,18 @@ export function buildOpenApiSpec() {
           type: "object",
           properties: {
             id: { type: "string" },
+            accountId: { type: "string", default: "default" },
             name: { type: "string" },
             enabled: { type: "boolean" },
             chatType: { type: "string", enum: ["all", "group", "dm"] },
             chatId: { type: "string", nullable: true },
             allowedSenderIds: { type: "array", items: { type: "string" } },
             keywords: { type: "array", items: { type: "string" } },
+            textPrefixes: {
+              type: "array",
+              items: { type: "string" },
+              description: "Case-insensitive text prefixes that can trigger the rule",
+            },
             requireMention: { type: "boolean" },
             allowFromMe: { type: "boolean" },
             sandbox: { type: "string", enum: ["read-only", "workspace-write", "full-access"] },
@@ -532,6 +702,7 @@ export function buildOpenApiSpec() {
           type: "object",
           required: ["chatId", "text"],
           properties: {
+            accountId: { type: "string", default: "default" },
             chatId: { type: "string" },
             chatName: { type: "string" },
             isGroup: { type: "boolean" },
@@ -631,6 +802,7 @@ export function buildOpenApiSpec() {
 	          properties: {
 	            id: { type: "string" },
 	            type: { type: "string", enum: ["http", "transform", "script", "codex", "whatsapp"] },
+	            accountId: { type: "string", description: "WhatsApp account for whatsapp steps; defaults to default" },
 	            saveAs: { type: "string" },
 	            continueOnError: { type: "boolean" },
 	          },
@@ -686,6 +858,10 @@ export function buildOpenApiSpec() {
       },
     },
   }
+  for (const endpoint of ["/api/status", "/api/qr", "/api/groups", "/api/groups/{groupId}/participants", "/api/contacts", "/api/contacts/resolve", "/api/chats/{chatId}/messages", "/api/chats/{chatId}/typing", "/api/messages", "/api/messages/media", "/api/media/{filename}"]) {
+    spec.paths[endpoint].parameters = [queryParam("accountId", "WhatsApp account ID; defaults to the original account")]
+  }
+  return spec
 }
 
 function queryParam(name, description) {
@@ -782,6 +958,7 @@ export function renderManagementHtml() {
 	    activity: icon('<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'),
 	    book: icon('<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'),
 	    clock: icon('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+	    link: icon('<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>'),
 	  }
   return `<!DOCTYPE html>
 <html lang="en">
@@ -910,6 +1087,27 @@ export function renderManagementHtml() {
 	    .chat-log { background:var(--inset); border:1px solid var(--line); border-radius:12px; padding:12px; min-height:96px; max-height:260px; overflow:auto; font-size:.86rem; line-height:1.45; white-space:pre-wrap; }
 	    .run-log { max-height:330px; overflow:auto; }
 	    @media (max-width: 880px) { .grid, .grid.three, .split, .schedule-row { grid-template-columns:1fr; } .span2 { grid-column:auto; } main, .tabs { padding-left:14px; padding-right:14px; } }
+    @media (max-width: 600px) {
+      header { padding:10px 14px; flex-wrap:wrap; }
+      header h1 { flex:1; }
+      .header-right { width:100%; margin-left:0; justify-content:space-between; flex-wrap:wrap; gap:6px; }
+      .account-select { width:135px; }
+      .tabs { overflow-x:auto; }
+      .tabs button { white-space:nowrap; }
+    }
+    header .status.clickable { cursor:pointer; transition:border-color .15s, color .15s; }
+    header .status.clickable:hover { color:var(--text); border-color:rgba(255,107,129,.35); }
+    .link-panel { max-width:560px; }
+    .link-card { background:var(--panel2); border:1px solid var(--line); border-radius:var(--radius); padding:24px; box-shadow:var(--shadow-soft); }
+    .link-card h3 { margin:0 0 8px; font-size:1rem; }
+    .link-card p { margin:0 0 14px; color:var(--muted); line-height:1.5; font-size:.92rem; }
+    .link-card p:last-child { margin-bottom:0; }
+    .qr-wrap { display:flex; flex-direction:column; align-items:center; gap:14px; margin:18px 0 8px; }
+    .qr-wrap img { width:min(320px, 78vw); border-radius:14px; background:#fff; padding:14px; box-shadow:var(--shadow-soft); }
+    .tabs button .tab-dot { width:7px; height:7px; border-radius:50%; background:var(--danger); box-shadow:0 0 8px rgba(255,107,129,.55); }
+    .account-select { width:min(180px, 32vw); }
+    .account-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+    .account-controls input { width:min(200px, 100%); }
     .toast { position:fixed; bottom:24px; left:50%; transform:translate(-50%, 8px); background:var(--panel2); border:1px solid rgba(37,211,102,.4); color:var(--text); padding:11px 20px; border-radius:12px; font-size:.9rem; box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
     .toast.show { opacity:1; transform:translate(-50%, 0); }
   </style>
@@ -919,11 +1117,13 @@ export function renderManagementHtml() {
     <div class="logo">${icons.chat}</div>
     <h1><b>WhatsApp</b> API Gateway</h1>
     <div class="header-right">
+      <select id="account-select" class="account-select" aria-label="WhatsApp account"><option value="default">default</option></select>
       <a href="/docs">${icons.book} API Docs</a>
       <span id="status" class="status">connecting…</span>
     </div>
   </header>
   <div class="tabs">
+    <button data-tab="link">${icons.link} Link<span id="link-tab-dot" class="tab-dot hidden"></span></button>
     <button data-tab="groups" class="active">${icons.users} Groups</button>
 	    <button data-tab="contacts">${icons.user} Contacts</button>
 	    <button data-tab="webhooks">${icons.zap} Webhooks</button>
@@ -931,6 +1131,34 @@ export function renderManagementHtml() {
 	    <button data-tab="codex">${icons.bot} Codex</button>
 	  </div>
   <main>
+    <section id="tab-link" class="panel hidden link-panel">
+      <h2>${icons.link} Link WhatsApp</h2>
+      <form id="account-form" class="account-controls">
+        <input id="account-new-id" aria-label="New account ID" placeholder="Account ID" pattern="[a-z0-9][a-z0-9-]{0,31}" maxlength="32" required>
+        <button type="submit" class="primary">Add account</button>
+      </form>
+      <div id="link-connected" class="link-card hidden">
+        <h3>WhatsApp is linked</h3>
+        <p id="link-connected-user">Your gateway is connected and ready to send and receive messages.</p>
+      </div>
+      <div id="link-scan" class="link-card hidden">
+        <h3>Scan to link</h3>
+        <p>Open WhatsApp on your phone, go to <strong>Linked devices</strong>, tap <strong>Link a device</strong>, then scan this QR code.</p>
+        <div class="qr-wrap">
+          <img id="link-qr" alt="WhatsApp link QR code" width="320" height="320">
+        </div>
+        <p class="muted">This page refreshes automatically. The QR expires after a short time; a fresh one will appear here.</p>
+      </div>
+      <div id="link-rescan" class="link-card hidden">
+        <h3>Reconnect required</h3>
+        <p>Start a new link for this account. Its saved WhatsApp session will be cleared.</p>
+        <button type="button" id="account-relink" class="primary">Generate QR code</button>
+      </div>
+      <div id="link-waiting" class="link-card hidden">
+        <h3 id="link-waiting-title">Connecting...</h3>
+        <p id="link-waiting-text">Waiting for WhatsApp to finish linking.</p>
+      </div>
+    </section>
     <section id="tab-groups" class="panel">
       <h2>${icons.users} Groups</h2>
       <input id="group-search" class="search" placeholder="Search groups by name…">
@@ -1200,6 +1428,10 @@ export function renderManagementHtml() {
                   <textarea id="rule-keywords" placeholder="one keyword per line (blank = any text)"></textarea>
                 </div>
                 <div class="field">
+                  <label>Starts with</label>
+                  <textarea id="rule-prefixes" placeholder="one prefix per line"></textarea>
+                </div>
+                <div class="field">
                   <label>Auto-reply override</label>
                   <select id="rule-auto-reply">
                     <option value="">Use global default</option>
@@ -1274,6 +1506,16 @@ export function renderManagementHtml() {
     const esc = (v) => { const d = document.createElement('div'); d.textContent = String(v ?? ''); return d.innerHTML; };
     const toast = (m) => { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1600); };
     const copy = (v) => { navigator.clipboard.writeText(v); toast('Copied ' + v); };
+    let selectedAccountId = 'default';
+    const accountQuery = () => 'accountId=' + encodeURIComponent(selectedAccountId);
+    async function loadAccounts() {
+      const accounts = await fetch('/api/accounts').then((r) => r.json());
+      const select = document.getElementById('account-select');
+      select.replaceChildren(...accounts.map((account) => new Option(
+        account.id + (account.user?.name ? ' · ' + account.user.name : '') + (account.connected ? ' · online' : ''), account.id)));
+      if (!accounts.some((account) => account.id === selectedAccountId)) selectedAccountId = 'default';
+      select.value = selectedAccountId;
+    }
 	    let codexRulesCache = [];
 	    let editingRuleId = null;
 	    let selectedChat = { id: '', label: 'Any matching chat' };
@@ -1285,7 +1527,7 @@ export function renderManagementHtml() {
 	      { type: 'codex', id: 'draft', prompt: 'Use \${steps.fetch.body} and the job memory to draft the WhatsApp response.', sandbox: 'workspace-write', saveAs: 'draft' },
 	      { type: 'whatsapp', id: 'send', to: '120363000000000000@g.us', text: '\${steps.draft.text}' },
 	    ];
-	    const cronDayNames = {
+    const cronDayNames = {
 	      0: 'Sunday',
 	      1: 'Monday',
 	      2: 'Tuesday',
@@ -1293,29 +1535,128 @@ export function renderManagementHtml() {
 	      4: 'Thursday',
 	      5: 'Friday',
 	      6: 'Saturday',
-	    };
+    };
+
+    document.getElementById('account-select').addEventListener('change', (event) => {
+      selectedAccountId = event.target.value;
+      loadStatus(); loadLink(); loadGroups(); loadContacts();
+    });
+    document.getElementById('account-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const id = document.getElementById('account-new-id').value.trim();
+      const response = await fetch('/api/accounts', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      const result = await response.json();
+      if (!response.ok) return toast(result.error || 'Could not add account');
+      selectedAccountId = id;
+      event.target.reset();
+      await loadAccounts();
+      loadStatus(); loadLink(); loadGroups(); loadContacts();
+    });
+    document.getElementById('account-relink').addEventListener('click', async () => {
+      if (!confirm('Clear this account session and generate a new QR code?')) return;
+      const button = document.getElementById('account-relink');
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/accounts/' + encodeURIComponent(selectedAccountId) + '/relink', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) return toast(result.error || 'Could not relink account');
+        loadStatus(); loadLink();
+      } catch { toast('Could not contact the gateway'); }
+      finally { button.disabled = false; }
+    });
 
     document.querySelectorAll('.tabs button').forEach((btn) => {
       btn.onclick = () => {
         document.querySelectorAll('.tabs button').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-	        ['groups','contacts','webhooks','cron','codex'].forEach((t) =>
+	        ['link','groups','contacts','webhooks','cron','codex'].forEach((t) =>
           document.getElementById('tab-' + t).classList.toggle('hidden', t !== btn.dataset.tab));
+        if (btn.dataset.tab === 'link') loadLink();
       };
     });
 
+    function showTab(name) {
+      document.querySelectorAll('.tabs button').forEach((b) => {
+        b.classList.toggle('active', b.dataset.tab === name);
+      });
+      ['link','groups','contacts','webhooks','cron','codex'].forEach((t) =>
+        document.getElementById('tab-' + t).classList.toggle('hidden', t !== name));
+    }
+
+    async function loadLink() {
+      try {
+        const s = await fetch('/api/status?' + accountQuery()).then((r) => r.json());
+        const dot = document.getElementById('link-tab-dot');
+        const connected = document.getElementById('link-connected');
+        const scan = document.getElementById('link-scan');
+        const rescan = document.getElementById('link-rescan');
+        const waiting = document.getElementById('link-waiting');
+        const qrImg = document.getElementById('link-qr');
+        const connectedUser = document.getElementById('link-connected-user');
+
+        dot.classList.toggle('hidden', s.connected || s.awaitingLink);
+
+        connected.classList.add('hidden');
+        scan.classList.add('hidden');
+        rescan.classList.add('hidden');
+        waiting.classList.add('hidden');
+
+        if (s.connected) {
+          connected.classList.remove('hidden');
+          const userLabel = s.user?.name || s.user?.id || '';
+          connectedUser.textContent = userLabel
+            ? ('Linked as ' + userLabel + '. The gateway is ready to send and receive messages.')
+            : 'Your gateway is connected and ready to send and receive messages.';
+          qrImg.removeAttribute('src');
+          return;
+        }
+
+        if (s.awaitingLink && s.qrAvailable) {
+          scan.classList.remove('hidden');
+          const nextSrc = '/api/qr?' + accountQuery() + '&t=' + (s.qrUpdatedAt || Date.now());
+          if (qrImg.getAttribute('src') !== nextSrc) qrImg.src = nextSrc;
+          return;
+        }
+
+        if (s.awaitingLink) {
+          document.getElementById('link-waiting-title').textContent = 'Preparing QR code';
+          document.getElementById('link-waiting-text').textContent = 'The QR code will appear here shortly.';
+          waiting.classList.remove('hidden');
+          qrImg.removeAttribute('src');
+          return;
+        }
+
+        if (s.reconnecting) {
+          document.getElementById('link-waiting-title').textContent = 'Reconnecting';
+          document.getElementById('link-waiting-text').textContent = 'Waiting for the WhatsApp connection to return.';
+          waiting.classList.remove('hidden');
+          qrImg.removeAttribute('src');
+          return;
+        }
+
+        rescan.classList.remove('hidden');
+        qrImg.removeAttribute('src');
+      } catch {}
+    }
+
     async function loadStatus() {
       try {
-        const s = await fetch('/api/status').then((r) => r.json());
+        const s = await fetch('/api/status?' + accountQuery()).then((r) => r.json());
         const el = document.getElementById('status');
         el.textContent = s.connected ? ('Connected · ' + s.groupCount + ' groups · ' + s.contactCount + ' contacts') : 'Disconnected';
-        el.className = 'status ' + (s.connected ? 'ok' : '');
+        el.className = 'status ' + (s.connected ? 'ok' : 'clickable');
+        el.title = s.connected ? '' : 'Open Link tab to reconnect WhatsApp';
+        el.onclick = s.connected ? null : () => { showTab('link'); loadLink(); };
+        document.getElementById('link-tab-dot').classList.toggle('hidden', s.connected || s.awaitingLink);
+        if (!document.getElementById('tab-link').classList.contains('hidden')) loadLink();
       } catch {}
     }
 
     async function loadGroups() {
       const q = document.getElementById('group-search').value;
-      const rows = await fetch('/api/groups?q=' + encodeURIComponent(q) + '&limit=200').then((r) => r.json());
+      const rows = await fetch('/api/groups?q=' + encodeURIComponent(q) + '&limit=200&' + accountQuery()).then((r) => r.json());
       document.getElementById('group-rows').innerHTML = rows.length ? rows.map((g) =>
         '<tr><td>' + esc(g.name) + '</td><td class="id">' + esc(g.id) + '</td><td>' + (g.participantCount ?? '—') +
         '</td><td><button class="copy" data-id="' + esc(g.id) + '">Copy ID</button></td></tr>').join('')
@@ -1324,7 +1665,7 @@ export function renderManagementHtml() {
 
     async function loadContacts() {
       const q = document.getElementById('contact-search').value;
-      const rows = await fetch('/api/contacts?q=' + encodeURIComponent(q) + '&limit=200').then((r) => r.json());
+      const rows = await fetch('/api/contacts?q=' + encodeURIComponent(q) + '&limit=200&' + accountQuery()).then((r) => r.json());
       document.getElementById('contact-rows').innerHTML = rows.length ? rows.map((c) =>
         '<tr><td>' + esc(c.name || '—') + '</td><td>' + esc(c.number) + '</td><td class="id">' + esc(c.id) +
         '</td><td><button class="copy" data-id="' + esc(c.id) + '">Copy ID</button></td></tr>').join('')
@@ -1636,12 +1977,13 @@ export function renderManagementHtml() {
 
     function renderCodexRules(rules) {
       document.getElementById('codex-rule-rows').innerHTML = rules.length ? rules.map((rule) => {
-        const scope = [rule.chatType || 'all', rule.chatId || 'any chat'].join(' · ');
+        const scope = [rule.accountId || 'default', rule.chatType || 'all', rule.chatId || 'any chat'].join(' · ');
         const triggers = [
           rule.allowFromMe ? 'my msgs' : '',
           rule.requireMention ? '@ me' : '',
           (rule.allowedSenderIds || []).length ? 'senders: ' + rule.allowedSenderIds.length : '',
           (rule.keywords || []).length ? 'keywords: ' + rule.keywords.join(', ') : '',
+          (rule.textPrefixes || []).length ? 'starts: ' + rule.textPrefixes.join(', ') : '',
         ].filter(Boolean).join(' · ') || 'all messages';
         return '<tr><td><b>' + esc(rule.name) + '</b><div class="muted">' + (rule.enabled ? 'enabled' : 'disabled') +
           '</div></td><td class="id">' + esc(scope) + '</td><td>' + esc(triggers) + '</td><td>' + esc(rule.sandbox || 'default') +
@@ -1682,7 +2024,7 @@ export function renderManagementHtml() {
       const limit = 200;
       const query = encodeURIComponent(q || '');
       if (chatType === 'group') {
-        return (await fetch('/api/groups?q=' + query + '&limit=' + limit).then((r) => r.json())).map((g) => ({
+        return (await fetch('/api/groups?q=' + query + '&limit=' + limit + '&' + accountQuery()).then((r) => r.json())).map((g) => ({
           id: g.id, label: g.name || g.id, sub: g.id,
         }));
       }
@@ -1692,8 +2034,8 @@ export function renderManagementHtml() {
         }));
       }
       const [groups, contacts] = await Promise.all([
-        fetch('/api/groups?q=' + query + '&limit=' + limit).then((r) => r.json()),
-        fetch('/api/contacts?q=' + query + '&limit=' + limit).then((r) => r.json()),
+        fetch('/api/groups?q=' + query + '&limit=' + limit + '&' + accountQuery()).then((r) => r.json()),
+        fetch('/api/contacts?q=' + query + '&limit=' + limit + '&' + accountQuery()).then((r) => r.json()),
       ]);
       return [
         ...groups.map((g) => ({ id: g.id, label: g.name || g.id, sub: g.id, kind: 'group' })),
@@ -1714,8 +2056,8 @@ export function renderManagementHtml() {
       const limit = 200;
       const query = encodeURIComponent(q || '');
       const [groups, contacts] = await Promise.all([
-        fetch('/api/groups?q=' + query + '&limit=' + limit).then((r) => r.json()),
-        fetch('/api/contacts?q=' + query + '&limit=' + limit).then((r) => r.json()),
+        fetch('/api/groups?q=' + query + '&limit=' + limit + '&' + accountQuery()).then((r) => r.json()),
+        fetch('/api/contacts?q=' + query + '&limit=' + limit + '&' + accountQuery()).then((r) => r.json()),
       ]);
       return [
         ...groups.map((g) => ({ id: g.id, label: g.name || g.id, sub: g.id, isGroup: true })),
@@ -1767,6 +2109,7 @@ export function renderManagementHtml() {
       document.getElementById('rule-allow-from-me').checked = !!rule.allowFromMe;
       document.getElementById('rule-senders').value = (rule.allowedSenderIds || []).join('\\n');
       document.getElementById('rule-keywords').value = (rule.keywords || []).join('\\n');
+      document.getElementById('rule-prefixes').value = (rule.textPrefixes || []).join('\\n');
       document.getElementById('rule-prompt').value = rule.prompt || '';
       document.getElementById('rule-workspace').value = rule.workspaceSubdir || '';
       document.getElementById('rule-auto-reply').value =
@@ -1858,8 +2201,9 @@ export function renderManagementHtml() {
 
 	    document.getElementById('wh-form').addEventListener('submit', async (e) => {
 	      e.preventDefault();
-	      const body = {
-	        url: document.getElementById('wh-url').value.trim(),
+      const body = {
+        url: document.getElementById('wh-url').value.trim(),
+        accountId: selectedAccountId,
         chatId: document.getElementById('wh-chat').value.trim() || undefined,
         secret: document.getElementById('wh-secret').value.trim() || undefined,
       };
@@ -2035,6 +2379,9 @@ export function renderManagementHtml() {
       const keywordsEl = document.getElementById('rule-keywords');
       if (allowFromMe && !keywordsEl.value.trim()) keywordsEl.value = 'codex';
       const body = {
+        accountId: editingRuleId
+          ? (codexRulesCache.find((rule) => rule.id === editingRuleId)?.accountId || 'default')
+          : selectedAccountId,
         name: document.getElementById('rule-name').value.trim(),
         chatType: document.getElementById('rule-chat-type').value,
         sandbox: document.getElementById('rule-sandbox').value,
@@ -2043,6 +2390,7 @@ export function renderManagementHtml() {
         allowFromMe,
         allowedSenderIds: lines('rule-senders'),
         keywords: lines('rule-keywords'),
+        textPrefixes: lines('rule-prefixes'),
         prompt: document.getElementById('rule-prompt').value.trim(),
         workspaceSubdir: document.getElementById('rule-workspace').value.trim(),
       };
@@ -2062,6 +2410,7 @@ export function renderManagementHtml() {
       const chatId = document.getElementById('memory-chat-id').value.trim();
       if (!chatId) return toast('Select a chat first');
       const params = new URLSearchParams({
+        accountId: selectedAccountId,
         chatId,
         chatName: document.getElementById('memory-chat-name').value.trim(),
         isGroup: selectedMemoryChat.isGroup ? 'true' : 'false',
@@ -2075,6 +2424,7 @@ export function renderManagementHtml() {
     document.getElementById('codex-memory-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const body = {
+        accountId: selectedAccountId,
         chatId: document.getElementById('memory-chat-id').value.trim(),
         chatName: document.getElementById('memory-chat-name').value.trim(),
         isGroup: selectedMemoryChat.isGroup,
@@ -2097,8 +2447,14 @@ export function renderManagementHtml() {
 	    }
 
 	    resetCronJobForm();
-	    loadStatus(); loadGroups(); loadContacts(); loadWebhooks(); loadCron(); loadCodex();
-	    setInterval(loadStatus, 5000);
+	    loadStatus().then(async () => {
+	      try {
+	        const s = await fetch('/api/status').then((r) => r.json());
+	        if (!s.connected) showTab('link');
+	      } catch {}
+	    });
+	    loadAccounts(); loadLink(); loadGroups(); loadContacts(); loadWebhooks(); loadCron(); loadCodex();
+	    setInterval(() => { loadStatus(); loadLink(); }, 3000);
   </script>
 </body>
 </html>`
